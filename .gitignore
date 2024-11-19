@@ -1,0 +1,6 @@
+# File extensions
+*.binlog
+
+# Directories
+artifacts/
+**/obj/

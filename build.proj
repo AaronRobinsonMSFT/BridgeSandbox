@@ -1,0 +1,53 @@
+<Project>
+  <Import Project="$(MSBuildThisFileDirectory)/Directory.Build.props"/>
+
+  <Target Name="Build"
+    DependsOnTargets="DotnetBuild;JavaBuild;NativeBuild" />
+
+  <ItemGroup Label="Inputs">
+    <DotnetInputs Include="$(SourceRootPath)DnLib/*.cs"/>
+    <JavaInputs Include="$(SourceRootPath)JavaApp/*.java"/>
+    <NativeInputs Include="$(SourceRootPath)Bridge/*.cpp" />
+  </ItemGroup>
+
+  <ItemGroup Label="Outputs">
+    <DotnetOutputs Include="$(OutputPath)DnLib.dll"/>
+    <JavaOutputs Include="$(OutputPath)JavaApp.class"/>
+
+    <NativeOutputs Condition="$([MSBuild]::IsOsPlatform('Windows'))" Include="$(OutputPath)bridge.dll" />
+    <NativeOutputs Condition="$([MSBuild]::IsOsPlatform('OSX'))" Include="$(OutputPath)libbridge.dylib" />
+    <NativeOutputs Condition="$([MSBuild]::IsOsPlatform('Linux'))" Include="$(OutputPath)libbridge.so" />
+  </ItemGroup>
+
+  <Target Name="DotnetBuild"
+    Inputs="@(DotnetInputs)"
+    Outputs="@(DotnetOutputs)">
+    <Exec Command="dotnet build &quot;$(SourceRootPath)DnLib&quot; -c $(Configuration)" />
+  </Target>
+
+  <Target Name="JavaBuild"
+    Inputs="@(JavaInputs)"
+    Outputs="@(JavaOutputs)">
+    <Exec Command="javac -verbose -g -h &quot;$(ArtifactsPath)inc&quot; -d &quot;$(OutputPath)&quot; @(JavaInputs)" />
+  </Target>
+
+  <Target Name="NativeBuild"
+    Inputs="@(NativeInputs)"
+    Outputs="@(NativeOutputs)">
+
+    <Error Condition="'$(JDKPath)' == ''" Text="JDK path must be set" />
+
+    <!-- Generate the native projects -->
+    <Exec Command="cmake -D CMAKE_INSTALL_PREFIX=&quot;$(ArtifactsPath)&quot; -D GENERATED_INC=&quot;$(GeneratedIncPath)&quot; -D JDK_INC=&quot;$(JDKPath)/include&quot; -S &quot;$(SourceRootPath)Bridge&quot; -B &quot;$(ArtifactsPath)&quot;"
+          ConsoleToMsBuild="true" />
+
+    <!-- Build and install the native projects -->
+    <Exec Command="cmake --build &quot;$(ArtifactsPath)&quot; --config $(Configuration) --target INSTALL"
+          ConsoleToMsBuild="true" />
+  </Target>
+
+  <Target Name="Clean">
+    <RemoveDir Directories="$(ArtifactsPath)"/>
+  </Target>
+
+</Project>

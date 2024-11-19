@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
+    <SourceRootPath>$(MSBuildThisFileDirectory)</SourceRootPath>
+    <ArtifactsPath>$(MSBuildThisFileDirectory)artifacts/</ArtifactsPath>
+    <GeneratedIncPath>$(ArtifactsPath)/inc/</GeneratedIncPath>
+    <OutputPath>$(ArtifactsPath)$(Configuration)/</OutputPath>
+
+    <JDKPath Condition="'$(JDKPath)' == ''"></JDKPath>
+  </PropertyGroup>
+</Project>
