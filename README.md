@@ -32,8 +32,6 @@ The `BridgeContext` context contains pointers to [`jvmtiEnv`](https://docs.oracl
 - Add the JDK's `bin/` directory to the path.
 - Confirm that `cmake`, `dotnet`, `javac` and `java` are on the path.
 
-**macOS**: It may be required to define the `DOTNET_ROOT` environment variable if the .NET install is non-standard.
-
 ## Build
 
 To build:
@@ -57,6 +55,10 @@ Navigate to the output directory.
 Run the `JavaApp` application and pass the agent flag to load the Bridge.
 
 `java -agentlib:bridge JavaApp`
+
+**Linux** It may be required to define `LD_LIBRARY_PATH` if the JVM fails to load the agent.
+
+**ALL** It may be required to define the `DOTNET_ROOT` environment variable if the .NET install is non-standard.
 
 Expected output:
 
