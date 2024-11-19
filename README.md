@@ -1,5 +1,7 @@
 # .NET and Java Bridge
 
+[![BridgeSandbox](https://github.com/AaronRobinsonMSFT/BridgeSandbox/actions/workflows/master.yml/badge.svg)](https://github.com/AaronRobinsonMSFT/BridgeSandbox/actions/workflows/master.yml)
+
 The is a sandbox environment to investigate how a Bridge between the two runtimes (that is, CoreCLR and JVM) could be designed.
 
 ## Design
@@ -58,7 +60,7 @@ Run the `JavaApp` application and pass the agent flag to load the Bridge.
 
 **Linux** It may be required to define `LD_LIBRARY_PATH` if the JVM fails to load the agent.
 
-**ALL** It may be required to define the `DOTNET_ROOT` environment variable if the .NET install is non-standard.
+**All** It may be required to define the `DOTNET_ROOT` environment variable if the .NET install is non-standard.
 
 Expected output:
 

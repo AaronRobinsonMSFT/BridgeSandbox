@@ -6,6 +6,6 @@
     <GeneratedIncPath>$(ArtifactsPath)/inc/</GeneratedIncPath>
     <OutputPath>$(ArtifactsPath)$(Configuration)/</OutputPath>
 
-    <JDKPath Condition="'$(JDKPath)' == ''"></JDKPath>
+    <JDKPath Condition="'$(JDKPath)' == ''">$(JAVA_HOME)</JDKPath>
   </PropertyGroup>
 </Project>
