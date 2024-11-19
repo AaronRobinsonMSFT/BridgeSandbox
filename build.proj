@@ -38,12 +38,10 @@
     <Error Condition="'$(JDKPath)' == ''" Text="JDK path must be set" />
 
     <!-- Generate the native projects -->
-    <Exec Command="cmake -D CMAKE_INSTALL_PREFIX=&quot;$(ArtifactsPath)&quot; -D GENERATED_INC=&quot;$(GeneratedIncPath)&quot; -D JDK_INC=&quot;$(JDKPath)/include&quot; -S &quot;$(SourceRootPath)Bridge&quot; -B &quot;$(ArtifactsPath)&quot;"
-          ConsoleToMsBuild="true" />
+    <Exec Command="cmake -DCMAKE_BUILD_TYPE=$(Configuration) -D CMAKE_INSTALL_PREFIX=&quot;$(ArtifactsPath)&quot; -D GENERATED_INC=&quot;$(GeneratedIncPath)&quot; -D JDK_INC=&quot;$(JDKPath)/include&quot; -S &quot;$(SourceRootPath)Bridge&quot; -B &quot;$(ArtifactsPath)&quot;"/>
 
     <!-- Build and install the native projects -->
-    <Exec Command="cmake --build &quot;$(ArtifactsPath)&quot; --config $(Configuration) --target INSTALL"
-          ConsoleToMsBuild="true" />
+    <Exec Command="cmake --build &quot;$(ArtifactsPath)&quot; --config $(Configuration) --target install"/>
   </Target>
 
   <Target Name="Clean">

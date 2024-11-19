@@ -32,6 +32,8 @@ The `BridgeContext` context contains pointers to [`jvmtiEnv`](https://docs.oracl
 - Add the JDK's `bin/` directory to the path.
 - Confirm that `cmake`, `dotnet`, `javac` and `java` are on the path.
 
+**macOS**: It may be required to define the `DOTNET_ROOT` environment variable if the .NET install is non-standard.
+
 ## Build
 
 To build:
@@ -60,8 +62,8 @@ Expected output:
 
 ```console
 $ java -agentlib:bridge JavaApp
-Bridge!`anonymous-namespace'::VMInit
+Bridge!VMInit()
 JavaApp.main()
 DnLib!DnLib.Init.Initialize()
-Bridge!`anonymous-namespace'::DotnetCallback
+Bridge!DotnetCallback()
 ```

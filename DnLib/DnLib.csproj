@@ -10,7 +10,12 @@
 
   <PropertyGroup Label="DNNE Config">
     <EnableDynamicLoading>true</EnableDynamicLoading>
-    <DnneNativeBinaryName>DnLibEntry</DnneNativeBinaryName>
+    <!--
+      On macOS, Java's loadLibrary() logic prepends 'lib' during load.
+      With this prefix, discovery at run time will fail.
+    -->
+    <DnneNativeBinaryName>libDnLibEntry</DnneNativeBinaryName>
+    <DnneNativeBinaryName Condition="$([MSBuild]::IsOsPlatform('Windows'))">DnLibEntry</DnneNativeBinaryName>
   </PropertyGroup>
 
   <ItemGroup>

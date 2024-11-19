@@ -26,7 +26,7 @@ namespace
         JNIEnv* env,
         jthread)
     {
-        std::printf("Bridge!" __FUNCTION__ "\n");
+        std::printf("Bridge!VMInit()\n");
 
         // Fill out the Bridge context that will be passed
         // to .NET.
@@ -58,7 +58,7 @@ namespace
 
     void JNICALL DotnetCallback(void* cxt)
     {
-        std::printf("Bridge!" __FUNCTION__ "\n");
+        std::printf("Bridge!DotnetCallback()\n");
     }
 }
 
