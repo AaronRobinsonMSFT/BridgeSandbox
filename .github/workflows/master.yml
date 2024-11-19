@@ -1,0 +1,72 @@
+name: BridgeSandbox
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - '**/*.md'
+  pull_request:
+    branches: [master]
+    paths-ignore:
+      - '**/*.md'
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        flavor: [ 'Debug', 'Release' ]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+        dotnet-quality: 'ga'
+    - name: Setup JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'oracle'
+        java-version: '21'
+    - name: Build
+      run: dotnet build build.proj -c ${{ matrix.flavor }}
+
+  windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        flavor: [ 'Debug', 'Release' ]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+        dotnet-quality: 'ga'
+    - name: Setup JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'oracle'
+        java-version: '21'
+    - name: Build
+      run: dotnet build build.proj -c ${{ matrix.flavor }}
+
+  macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        flavor: [ 'Debug', 'Release' ]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+        dotnet-quality: 'ga'
+    - name: Setup JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'oracle'
+        java-version: '21'
+    - name: Build
+      run: dotnet build build.proj -c ${{ matrix.flavor }}
