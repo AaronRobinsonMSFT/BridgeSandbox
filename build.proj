@@ -37,8 +37,12 @@
 
     <Error Condition="'$(JDKPath)' == ''" Text="JDK path must be set" />
 
+    <PropertyGroup>
+      <AdditionalCMakeArgs Condition="!$([MSBuild]::IsOsPlatform('Windows'))">-D CMAKE_BUILD_TYPE=$(Configuration)</AdditionalCMakeArgs>
+    </PropertyGroup>
+
     <!-- Generate the native projects -->
-    <Exec Command="cmake -DCMAKE_BUILD_TYPE=$(Configuration) -D CMAKE_INSTALL_PREFIX=&quot;$(ArtifactsPath)&quot; -D GENERATED_INC=&quot;$(GeneratedIncPath)&quot; -D JDK_INC=&quot;$(JDKPath)/include&quot; -S &quot;$(SourceRootPath)Bridge&quot; -B &quot;$(ArtifactsPath)&quot;"/>
+    <Exec Command="cmake $(AdditionalCMakeArgs) -D CMAKE_INSTALL_PREFIX=&quot;$(ArtifactsPath)&quot; -D GENERATED_INC=&quot;$(GeneratedIncPath)&quot; -D JDK_INC=&quot;$(JDKPath)/include&quot; -S &quot;$(SourceRootPath)Bridge&quot; -B &quot;$(ArtifactsPath)&quot;"/>
 
     <!-- Build and install the native projects -->
     <Exec Command="cmake --build &quot;$(ArtifactsPath)&quot; --config $(Configuration) --target install"/>

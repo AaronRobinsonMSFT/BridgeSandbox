@@ -23,7 +23,7 @@ The `BridgeContext` context contains pointers to [`jvmtiEnv`](https://docs.oracl
 
 ## Requirements
 
-- CMake >= 3.0 - https://cmake.org/download/
+- CMake >= 3.20 - https://cmake.org/download/
 - .NET >= 9.0 - https://dotnet.microsoft.com/download
 - C++ compiler >= C++ 17 (that is, MSVC, Clang, GCC)
 - JDK >= 20 - https://www.oracle.com/java/technologies/downloads/
