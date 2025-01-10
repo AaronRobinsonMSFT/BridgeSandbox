@@ -42,7 +42,7 @@
     </PropertyGroup>
 
     <!-- Generate the native projects -->
-    <Exec Command="cmake $(AdditionalCMakeArgs) -D CMAKE_INSTALL_PREFIX=&quot;$(ArtifactsPath)&quot; -D GENERATED_INC=&quot;$(GeneratedIncPath)&quot; -D JDK_INC=&quot;$(JDKPath)/include&quot; -S &quot;$(SourceRootPath)Bridge&quot; -B &quot;$(ArtifactsPath)&quot;"/>
+    <Exec Command="cmake $(AdditionalCMakeArgs) -D CMAKE_INSTALL_PREFIX=&quot;$(ArtifactsPath)&quot; -D GENERATED_INC=&quot;$(GeneratedIncPath)&quot; -D JDK_INC=&quot;$(JDKPath)/include&quot; -S &quot;$(SourceRootPath)Bridge&quot; -B &quot;$(ArtifactsPath)&quot;" ConsoleToMSBuild="true"/>
 
     <!-- Build and install the native projects -->
     <Exec Command="cmake --build &quot;$(ArtifactsPath)&quot; --config $(Configuration) --target install"/>

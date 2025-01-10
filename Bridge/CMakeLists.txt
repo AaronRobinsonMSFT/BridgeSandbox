@@ -20,7 +20,7 @@ elseif (UNIX)
     include_directories(${JDK_INC}/linux)
 endif()
 
-add_library(bridge SHARED bridge.cpp)
+add_library(bridge SHARED bridge.cpp tracker.cpp)
 
 install(TARGETS bridge DESTINATION $<CONFIG>/${CMAKE_GENERATOR_PLATFORM})
 if (WIN32)

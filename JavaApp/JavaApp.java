@@ -9,10 +9,15 @@ public class JavaApp {
 
     private static native void DotnetInit(long bridgeContext);
 
+    private static native void DotnetMain();
+
     public static void main(String[] args) {
         System.out.println("JavaApp.main()");
 
         // Initialize the .NET environment.
         DotnetInit(s_BridgeContext);
+
+        // Call the .NET main method.
+        DotnetMain();
     }
 }

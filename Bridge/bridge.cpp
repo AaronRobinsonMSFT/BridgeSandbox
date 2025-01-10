@@ -2,9 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-// JVM headers
-#include <jni.h>
-#include <jvmti.h>
+#include "bridge.hpp"
 
 #define BEGIN_EXTERN_C extern "C" {
 #define END_EXTERN_C }
@@ -16,10 +14,12 @@ namespace
         jvmtiEnv* Jvmti;
         JNIEnv* JNIenv;
         void (JNICALL *Callback)(void*);
+        HRESULT (JNICALL *CreateObject)(char const*, void*, void**);
     } BridgeContext;
 
     // Forward declaration
     void JNICALL DotnetCallback(void* cxt);
+    HRESULT JNICALL CreateObject(char const* className, void* outer, void** instance);
 
     void VMInit(
         jvmtiEnv* jvmti,
@@ -33,6 +33,7 @@ namespace
         BridgeContext.Jvmti = jvmti;
         BridgeContext.JNIenv = env;
         BridgeContext.Callback = &DotnetCallback;
+        BridgeContext.CreateObject = &CreateObject;
 
         // Find the class and static field to update.
         char const* className = "JavaApp";
@@ -54,11 +55,21 @@ namespace
         // Set static field value to the address of the BridgeContext.
         // This will be passed to a native export to the .NET environment.
         env->SetStaticLongField(classID, fieldID, (jlong)&BridgeContext);
+
+        // Initialize the tracker host with the JVM details.
+        InitializeTrackerHost(jvmti, env);
     }
 
     void JNICALL DotnetCallback(void* cxt)
     {
         std::printf("Bridge!DotnetCallback()\n");
+    }
+
+    HRESULT JNICALL CreateObject(char const* className, void* outer, void** instance)
+    {
+        jclass klass = BridgeContext.JNIenv->FindClass(className);
+        jobject obj = BridgeContext.JNIenv->AllocObject(klass);
+        return CreateTrackerInstance(obj, (IUnknown*)outer, (IUnknown**)instance);
     }
 }
 
