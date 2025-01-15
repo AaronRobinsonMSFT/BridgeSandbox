@@ -11,11 +11,16 @@ public class JavaApp {
 
     private static native void DotnetMain();
 
+    private static Node s_Node;
+
     public static void main(String[] args) {
         System.out.println("JavaApp.main()");
 
         // Initialize the .NET environment.
         DotnetInit(s_BridgeContext);
+
+        // Create the root Node instance.
+        s_Node = new Node();
 
         // Call the .NET main method.
         DotnetMain();

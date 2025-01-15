@@ -89,9 +89,16 @@ namespace
                 : _implOuter{ pUnkOuter }
                 , _trackerSourceCount{ 0 }
                 , _instance{ instance }
-            { }
+            {
+                assert(_instance != nullptr);
+            }
 
             ~TrackerObjectImpl() = default;
+
+            void SetJNIHandle(intptr_t handle)
+            {
+                _instance = reinterpret_cast<jobject>(handle);
+            }
 
         public: // IJVMObject
             STDMETHOD(GetJNIHandle)(_Out_ intptr_t* target)
@@ -140,6 +147,18 @@ namespace
         }
 
         ~TrackerObject() = default;
+
+        intptr_t GetJNIHandle()
+        {
+            intptr_t handle = 0;
+            (void)_impl.GetJNIHandle(&handle);
+            return handle;
+        }
+
+        void SetJNIHandle(intptr_t handle)
+        {
+            _impl.SetJNIHandle(handle);
+        }
 
     public: // IUnknown
         STDMETHOD(QueryInterface)(
@@ -203,6 +222,12 @@ namespace
         jclass _systemClass;
         jmethodID _gcMethod;
 
+        jobject _rootNode;
+        jmethodID _nodePrint;
+
+        int _objectGraphLength;
+        void* _objectGraphTmp;
+
     public:
         TrackerRuntimeManagerImpl()
             : _runtimeServices{ nullptr }
@@ -210,6 +235,10 @@ namespace
             , _jnienv{ nullptr }
             , _systemClass{ nullptr }
             , _gcMethod{ nullptr }
+            , _rootNode{ nullptr }
+            , _nodePrint{ nullptr }
+            , _objectGraphLength{ 0 }
+            , _objectGraphTmp{ nullptr }
         { }
 
         ~TrackerRuntimeManagerImpl() = default;
@@ -221,8 +250,46 @@ namespace
             _jvmti = jvmti;
             _jnienv = env;
 
-            _systemClass = _jnienv->FindClass("java/lang/System");
+            jclass systemClass = _jnienv->FindClass("java/lang/System");
+            _systemClass = static_cast<jclass>(_jnienv->NewGlobalRef(systemClass));
             _gcMethod = _jnienv->GetStaticMethodID(_systemClass, "gc", "()V");
+            _jnienv->DeleteLocalRef(systemClass);
+        }
+
+        void JVMInitializeObjectGraph()
+        {
+            assert(_jnienv != nullptr);
+
+            jclass javaAppClass = _jnienv->FindClass("JavaApp");
+            assert(javaAppClass != nullptr);
+
+            jfieldID fieldID = _jnienv->GetStaticFieldID(javaAppClass, "s_Node", "LNode;");
+            assert(fieldID != nullptr);
+
+            // Get and store the value of the static field
+            jobject nodeInst = _jnienv->GetStaticObjectField(javaAppClass, fieldID);
+            assert(nodeInst != nullptr);
+
+            // Store the global reference to the root node
+            assert(_rootNode == nullptr);
+            _rootNode = _jnienv->NewGlobalRef(nodeInst);
+
+            jclass nodeClass = _jnienv->FindClass("Node");
+            assert(nodeClass != nullptr);
+
+            _nodePrint = _jnienv->GetMethodID(nodeClass, "print", "()V");
+            assert(_nodePrint != nullptr);
+
+            // Clean up local references
+            _jnienv->DeleteLocalRef(nodeClass);
+            _jnienv->DeleteLocalRef(nodeInst);
+            _jnienv->DeleteLocalRef(javaAppClass);
+        }
+
+        void SetObjectGraph(int length, void* graph)
+        {
+            _objectGraphLength = length;
+            _objectGraphTmp = graph;
         }
 
     private:
@@ -235,10 +302,38 @@ namespace
             _jnienv->CallStaticVoidMethod(_systemClass, _gcMethod);
         }
 
+        void JVMPrintNode()
+        {
+            assert(_jnienv != nullptr);
+            assert(_rootNode != nullptr && _nodePrint != nullptr);
+
+            _jnienv->CallVoidMethod(_rootNode, _nodePrint);
+        }
+
     public: // IReferenceTrackerManager
         STDMETHOD(ReferenceTrackingStarted)()
         {
             std::printf("TrackerRuntimeManagerImpl::ReferenceTrackingStarted()\n");
+
+            assert(_objectGraphTmp != nullptr);
+
+            struct JavaReferences
+            {
+                TrackerObject* Object;
+                TrackerObject** References;
+            };
+
+            JavaReferences* allRefs = (JavaReferences*)_objectGraphTmp;
+            for (int i = 0; i < _objectGraphLength; ++i)
+            {
+                std::printf("Object: %#zx\n", allRefs[i].Object->GetJNIHandle());
+                for (int j = 0; allRefs[i].References[j] != nullptr; ++j)
+                {
+                    std::printf("  Reference: %#zx\n", allRefs[i].References[j]->GetJNIHandle());
+                }
+            }
+
+            JVMPrintNode();
             JVMTriggerGC();
             return S_OK;
         }
@@ -252,6 +347,8 @@ namespace
         STDMETHOD(ReferenceTrackingCompleted)()
         {
             std::printf("TrackerRuntimeManagerImpl::ReferenceTrackingCompleted()\n");
+            JVMPrintNode();
+            _objectGraphTmp = nullptr;
             return S_OK;
         }
 
@@ -313,6 +410,9 @@ namespace
 
     HRESULT STDMETHODCALLTYPE TrackerObject::TrackerObjectImpl::GetReferenceTrackerManager(_Outptr_ API::IReferenceTrackerManager** ppTrackerManager)
     {
+        // Initialize objects needed for managing the JVM object graph.
+        TrackerRuntimeManager.JVMInitializeObjectGraph();
+
         return TrackerRuntimeManager.QueryInterface(API::IID_IReferenceTrackerManager, (void**)ppTrackerManager);
     }
 
@@ -339,6 +439,11 @@ namespace
         /* Not used by runtime */
         return E_NOTIMPL;
     }
+}
+
+void JNICALL SetObjectGraph(int length, void* graph)
+{
+    TrackerRuntimeManager.SetObjectGraph(length, graph);
 }
 
 void InitializeTrackerHost(jvmtiEnv* jvmti, JNIEnv* env)

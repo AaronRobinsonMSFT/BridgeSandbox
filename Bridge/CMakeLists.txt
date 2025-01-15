@@ -2,7 +2,7 @@ cmake_minimum_required (VERSION 3.20)
 project (bridge LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Add the generated inc/ directory
 include_directories(${GENERATED_INC})
@@ -18,6 +18,10 @@ elseif (APPLE)
 elseif (UNIX)
     add_compile_definitions(LINUX)
     include_directories(${JDK_INC}/linux)
+endif()
+
+if (WIN32)
+    add_compile_options(/permissive-)
 endif()
 
 add_library(bridge SHARED bridge.cpp tracker.cpp)

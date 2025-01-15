@@ -1,6 +1,7 @@
 // Standard headers
 #include <cstdio>
 #include <cstdlib>
+#include <array>
 
 #include "bridge.hpp"
 
@@ -15,13 +16,14 @@ namespace
         JNIEnv* JNIenv;
         void (JNICALL *Callback)(void*);
         HRESULT (JNICALL *CreateObject)(char const*, void*, void**);
+        void (JNICALL *SetObjectGraph)(int, void*);
     } BridgeContext;
 
     // Forward declaration
     void JNICALL DotnetCallback(void* cxt);
     HRESULT JNICALL CreateObject(char const* className, void* outer, void** instance);
 
-    void VMInit(
+    void JNICALL VMInit(
         jvmtiEnv* jvmti,
         JNIEnv* env,
         jthread)
@@ -34,6 +36,7 @@ namespace
         BridgeContext.JNIenv = env;
         BridgeContext.Callback = &DotnetCallback;
         BridgeContext.CreateObject = &CreateObject;
+        BridgeContext.SetObjectGraph = &SetObjectGraph;
 
         // Find the class and static field to update.
         char const* className = "JavaApp";
@@ -60,6 +63,16 @@ namespace
         InitializeTrackerHost(jvmti, env);
     }
 
+    void JNICALL GCStartCallback(jvmtiEnv*)
+    {
+        std::printf("JVM Garbage Collection started.\n");
+    }
+
+    void JNICALL GCFinishCallback(jvmtiEnv*)
+    {
+        std::printf("JVM Garbage Collection finished.\n");
+    }
+
     void JNICALL DotnetCallback(void* cxt)
     {
         std::printf("Bridge!DotnetCallback()\n");
@@ -69,7 +82,15 @@ namespace
     {
         jclass klass = BridgeContext.JNIenv->FindClass(className);
         jobject obj = BridgeContext.JNIenv->AllocObject(klass);
-        return CreateTrackerInstance(obj, (IUnknown*)outer, (IUnknown**)instance);
+
+        jobject objRef = BridgeContext.JNIenv->NewGlobalRef(obj);
+        HRESULT hr = CreateTrackerInstance(objRef, (IUnknown*)outer, (IUnknown**)instance);
+        if (FAILED(hr))
+            BridgeContext.JNIenv->NewGlobalRef(objRef);
+
+        BridgeContext.JNIenv->DeleteLocalRef(obj);
+        BridgeContext.JNIenv->DeleteLocalRef(klass);
+        return hr;
     }
 }
 
@@ -85,10 +106,21 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved)
         return JNI_ERR;
     }
 
-    // Enable the VMInit() callback.
     jvmtiError err;
+    jvmtiCapabilities capabilities{};
+    capabilities.can_generate_garbage_collection_events = 1;
+    err = jvmti->AddCapabilities(&capabilities);
+    if (err != JVMTI_ERROR_NONE)
+    {
+        std::printf("Failed to add capabilities: %d\n", err);
+        return JNI_ERR;
+    }
+
+    // Enable callbacks.
     jvmtiEventCallbacks cb{};
     cb.VMInit = &VMInit;
+    cb.GarbageCollectionStart = &GCStartCallback;
+    cb.GarbageCollectionFinish = &GCFinishCallback;
     err = jvmti->SetEventCallbacks(&cb, sizeof(cb));
     if (err != JVMTI_ERROR_NONE)
     {
@@ -96,11 +128,19 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved)
         return JNI_ERR;
     }
 
-    err = jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, (jthread)nullptr);
-    if (err != JVMTI_ERROR_NONE)
+    std::array events = {
+        JVMTI_EVENT_VM_INIT,
+        // JVMTI_EVENT_GARBAGE_COLLECTION_START,
+        // JVMTI_EVENT_GARBAGE_COLLECTION_FINISH
+    };
+    for (jvmtiEvent event : events)
     {
-        std::printf("Failed to SetEventNotificationMode(): %d\n", err);
-        return JNI_ERR;
+        err = jvmti->SetEventNotificationMode(JVMTI_ENABLE, event, (jthread)nullptr);
+        if (err != JVMTI_ERROR_NONE)
+        {
+            std::printf("Failed to SetEventNotificationMode(%d): %d\n", event, err);
+            return JNI_ERR;
+        }
     }
 
     return JNI_OK;

@@ -12,7 +12,7 @@
 
   <ItemGroup Label="Outputs">
     <DotnetOutputs Include="$(OutputPath)DnLib.dll"/>
-    <JavaOutputs Include="$(OutputPath)JavaApp.class"/>
+    <JavaOutputs Include="$(OutputPath)JavaApp.class;$(OutputPath)INode.class;$(OutputPath)Node.class"/>
 
     <NativeOutputs Condition="$([MSBuild]::IsOsPlatform('Windows'))" Include="$(OutputPath)bridge.dll" />
     <NativeOutputs Condition="$([MSBuild]::IsOsPlatform('OSX'))" Include="$(OutputPath)libbridge.dylib" />
@@ -28,12 +28,13 @@
   <Target Name="JavaBuild"
     Inputs="@(JavaInputs)"
     Outputs="@(JavaOutputs)">
-    <Exec Command="javac -verbose -g -h &quot;$(ArtifactsPath)inc&quot; -d &quot;$(OutputPath)&quot; @(JavaInputs)" />
+    <PropertyGroup>
+      <JavaInputFiles>@(JavaInputs->'%(Identity)', ' ')</JavaInputFiles>
+    </PropertyGroup>
+    <Exec Command="javac -verbose -g -h &quot;$(ArtifactsPath)inc&quot; -d &quot;$(OutputPath)&quot; $(JavaInputFiles)" ConsoleToMSBuild="true"/>
   </Target>
 
-  <Target Name="NativeBuild"
-    Inputs="@(NativeInputs)"
-    Outputs="@(NativeOutputs)">
+  <Target Name="NativeBuild">
 
     <Error Condition="'$(JDKPath)' == ''" Text="JDK path must be set" />
 
