@@ -20,13 +20,18 @@ elseif (UNIX)
     include_directories(${JDK_INC}/linux)
 endif()
 
-if (WIN32)
+if (MSVC)
     add_compile_options(/permissive-)
+    add_compile_options(/Zi)
 endif()
 
 add_library(bridge SHARED bridge.cpp tracker.cpp)
 
+if (MSVC)
+    target_link_options(bridge PUBLIC /DEBUG)
+endif()
+
 install(TARGETS bridge DESTINATION $<CONFIG>/${CMAKE_GENERATOR_PLATFORM})
 if (WIN32)
-    install(FILES $<TARGET_PDB_FILE:${PROJECT_NAME}> DESTINATION $<CONFIG>/${CMAKE_GENERATOR_PLATFORM} OPTIONAL)
+    install(FILES $<TARGET_PDB_FILE:${PROJECT_NAME}> DESTINATION $<CONFIG>/${CMAKE_GENERATOR_PLATFORM})
 endif()

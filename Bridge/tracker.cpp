@@ -148,16 +148,16 @@ namespace
 
         ~TrackerObject() = default;
 
-        intptr_t GetJNIHandle()
+        jobject GetJNIHandle()
         {
             intptr_t handle = 0;
             (void)_impl.GetJNIHandle(&handle);
-            return handle;
+            return reinterpret_cast<jobject>(handle);
         }
 
-        void SetJNIHandle(intptr_t handle)
+        void SetJNIHandle(jobject handle)
         {
-            _impl.SetJNIHandle(handle);
+            _impl.SetJNIHandle(reinterpret_cast<intptr_t>(handle));
         }
 
     public: // IUnknown
@@ -224,6 +224,8 @@ namespace
 
         jobject _rootNode;
         jmethodID _nodePrint;
+        jmethodID _nodeAddReference;
+        jmethodID _nodeClearReferences;
 
         int _objectGraphLength;
         void* _objectGraphTmp;
@@ -237,6 +239,7 @@ namespace
             , _gcMethod{ nullptr }
             , _rootNode{ nullptr }
             , _nodePrint{ nullptr }
+            , _nodeAddReference{ nullptr }
             , _objectGraphLength{ 0 }
             , _objectGraphTmp{ nullptr }
         { }
@@ -280,6 +283,12 @@ namespace
             _nodePrint = _jnienv->GetMethodID(nodeClass, "print", "()V");
             assert(_nodePrint != nullptr);
 
+            _nodeAddReference = _jnienv->GetMethodID(nodeClass, "addReference", "(Ljava/lang/Object;)V");
+            assert(_nodeAddReference != nullptr);
+
+            _nodeClearReferences = _jnienv->GetMethodID(nodeClass, "clearReferences", "()V");
+            assert(_nodeClearReferences != nullptr);
+
             // Clean up local references
             _jnienv->DeleteLocalRef(nodeClass);
             _jnienv->DeleteLocalRef(nodeInst);
@@ -298,7 +307,6 @@ namespace
             assert(_jnienv != nullptr);
             assert(_systemClass != nullptr && _gcMethod != nullptr);
 
-            std::printf("TrackerRuntimeManagerImpl::JVMTriggerGC()\n");
             _jnienv->CallStaticVoidMethod(_systemClass, _gcMethod);
         }
 
@@ -310,45 +318,116 @@ namespace
             _jnienv->CallVoidMethod(_rootNode, _nodePrint);
         }
 
+        void JVMAddReference(jobject target, jobject reference)
+        {
+            assert(_jnienv != nullptr);
+            assert(_nodeAddReference != nullptr);
+            assert(target != nullptr && reference != nullptr);
+
+            _jnienv->CallVoidMethod(target, _nodeAddReference, reference);
+        }
+
+        void JVMConvertToWeakReference(TrackerObject* obj)
+        {
+            assert(_jnienv != nullptr);
+            assert(obj != nullptr);
+
+            jobject ref = obj->GetJNIHandle();
+            jobject weakRef = _jnienv->NewWeakGlobalRef(ref);
+            obj->SetJNIHandle(weakRef);
+            _jnienv->DeleteGlobalRef(ref);
+        }
+
+        bool JVMConvertToStrongReference(TrackerObject* obj)
+        {
+            assert(_jnienv != nullptr);
+            assert(obj != nullptr);
+
+            jobject weakRef = obj->GetJNIHandle();
+            jobject ref = _jnienv->NewGlobalRef(weakRef);
+            obj->SetJNIHandle(ref);
+            _jnienv->DeleteWeakGlobalRef(weakRef);
+
+            return ref != nullptr;
+        }
+
     public: // IReferenceTrackerManager
         STDMETHOD(ReferenceTrackingStarted)()
         {
+            if (_objectGraphTmp == nullptr) // Need to check if graph has been set.
+                return S_OK;
+
             std::printf("TrackerRuntimeManagerImpl::ReferenceTrackingStarted()\n");
 
-            assert(_objectGraphTmp != nullptr);
-
+            // See JavaReferencesUnmanaged in Init.cs
             struct JavaReferences
             {
                 TrackerObject* Object;
                 TrackerObject** References;
+                uint8_t Collectible;
             };
 
-            JavaReferences* allRefs = (JavaReferences*)_objectGraphTmp;
+            // Reify the object graph in the JVM
+            JavaReferences* objGraph = (JavaReferences*)_objectGraphTmp;
             for (int i = 0; i < _objectGraphLength; ++i)
             {
-                std::printf("Object: %#zx\n", allRefs[i].Object->GetJNIHandle());
-                for (int j = 0; allRefs[i].References[j] != nullptr; ++j)
-                {
-                    std::printf("  Reference: %#zx\n", allRefs[i].References[j]->GetJNIHandle());
-                }
+                JavaReferences& r = objGraph[i];
+
+                // Skip collectible objects
+                if (r.Collectible)
+                    continue;
+
+                // Set the root node
+                if (i == 0)
+                    JVMAddReference(_rootNode, r.Object->GetJNIHandle());
+
+                for (int j = 0; r.References[j] != nullptr; ++j)
+                    JVMAddReference(r.Object->GetJNIHandle(), r.References[j]->GetJNIHandle());
             }
 
             JVMPrintNode();
+
+            // Convert all references to weak references
+            for (int i = 0; i < _objectGraphLength; ++i)
+            {
+                JavaReferences& r = objGraph[i];
+                JVMConvertToWeakReference(r.Object);
+            }
+
             JVMTriggerGC();
+
+            // Convert all references back to strong references and clear references in Java.
+            for (int i = 0; i < _objectGraphLength; ++i)
+            {
+                JavaReferences& r = objGraph[i];
+                if (JVMConvertToStrongReference(r.Object))
+                {
+                    _jnienv->CallVoidMethod(r.Object->GetJNIHandle(), _nodeClearReferences);
+                }
+            }
+
+            // Clear the references in the root node
+            _jnienv->CallVoidMethod(_rootNode, _nodeClearReferences);
+
             return S_OK;
         }
 
         STDMETHOD(FindTrackerTargetsCompleted)(_In_ BOOL bWalkFailed)
         {
-            std::printf("TrackerRuntimeManagerImpl::FindTrackerTargetsCompleted()\n");
+            // Nothing to walk in the Java heap.
             return S_OK;
         }
 
         STDMETHOD(ReferenceTrackingCompleted)()
         {
+            if (_objectGraphTmp == nullptr) // Need to check if graph has been set.
+                return S_OK;
+
             std::printf("TrackerRuntimeManagerImpl::ReferenceTrackingCompleted()\n");
-            JVMPrintNode();
+
+            // Reset object graph state
             _objectGraphTmp = nullptr;
+            _objectGraphLength = 0;
             return S_OK;
         }
 
@@ -392,19 +471,18 @@ namespace
 
     HRESULT STDMETHODCALLTYPE TrackerObject::TrackerObjectImpl::ConnectFromTrackerSource()
     {
-        std::printf("TrackerObject::TrackerObjectImpl::ConnectFromTrackerSource()\n");
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE TrackerObject::TrackerObjectImpl::DisconnectFromTrackerSource()
     {
-        std::printf("TrackerObject::TrackerObjectImpl::DisconnectFromTrackerSource()\n");
+        std::printf("TrackerObject being finalized in .NET: %p\n", this);
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE TrackerObject::TrackerObjectImpl::FindTrackerTargets(_In_ API::IFindReferenceTargetsCallback* pCallback)
     {
-        std::printf("TrackerObject::TrackerObjectImpl::FindTrackerTargets()\n");
+        // Nothing to walk in the Java heap.
         return S_OK;
     }
 
@@ -419,8 +497,6 @@ namespace
     HRESULT STDMETHODCALLTYPE TrackerObject::TrackerObjectImpl::AddRefFromTrackerSource()
     {
         assert(0 <= _trackerSourceCount);
-
-        std::printf("TrackerObject::TrackerObjectImpl::AddRefFromTrackerSource()\n");
         ++_trackerSourceCount;
         return S_OK;
     }
@@ -428,9 +504,11 @@ namespace
     HRESULT STDMETHODCALLTYPE TrackerObject::TrackerObjectImpl::ReleaseFromTrackerSource()
     {
         assert(0 < _trackerSourceCount);
-
-        std::printf("TrackerObject::TrackerObjectImpl::ReleaseFromTrackerSource()\n");
         --_trackerSourceCount;
+
+        if (_trackerSourceCount == 0)
+            std::printf("TrackerObject released from .NET\n");
+
         return S_OK;
     }
 
@@ -457,7 +535,9 @@ HRESULT CreateTrackerInstance(jobject obj, IUnknown* outer, IUnknown** tracker)
     try
     {
         TrackerObject* pTracker = new TrackerObject(obj, outer);
-        return pTracker->QueryInterface(IID_IUnknown, (void**)tracker);
+        HRESULT hr = pTracker->QueryInterface(IID_IUnknown, (void**)tracker);
+        pTracker->Release();
+        return hr;
     }
     catch (std::bad_alloc const&)
     {

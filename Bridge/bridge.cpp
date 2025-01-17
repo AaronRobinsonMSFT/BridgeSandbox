@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <array>
+#include <cassert>
 
 #include "bridge.hpp"
 
@@ -15,13 +16,13 @@ namespace
         jvmtiEnv* Jvmti;
         JNIEnv* JNIenv;
         void (JNICALL *Callback)(void*);
-        HRESULT (JNICALL *CreateObject)(char const*, void*, void**);
+        HRESULT (JNICALL *CreateObject)(char const*, int32_t, void**);
         void (JNICALL *SetObjectGraph)(int, void*);
     } BridgeContext;
 
     // Forward declaration
     void JNICALL DotnetCallback(void* cxt);
-    HRESULT JNICALL CreateObject(char const* className, void* outer, void** instance);
+    HRESULT JNICALL CreateObject(char const* className, int32_t id, void** instance);
 
     void JNICALL VMInit(
         jvmtiEnv* jvmti,
@@ -73,18 +74,29 @@ namespace
         std::printf("JVM Garbage Collection finished.\n");
     }
 
+    void JNICALL ObjectFreeCallback(jvmtiEnv*, jlong tag)
+    {
+        std::printf("JVM Object freed: %lld\n", tag);
+    }
+
     void JNICALL DotnetCallback(void* cxt)
     {
         std::printf("Bridge!DotnetCallback()\n");
     }
 
-    HRESULT JNICALL CreateObject(char const* className, void* outer, void** instance)
+    HRESULT JNICALL CreateObject(char const* className, int32_t id, void** instance)
     {
         jclass klass = BridgeContext.JNIenv->FindClass(className);
-        jobject obj = BridgeContext.JNIenv->AllocObject(klass);
+        jmethodID constructor = BridgeContext.JNIenv->GetMethodID(klass, "<init>", "(I)V");
+        jobject obj = BridgeContext.JNIenv->NewObject(klass, constructor, id);
+
+        jlong tag = (jlong)id;
+        jvmtiError error = BridgeContext.Jvmti->SetTag(obj, tag);
+        assert(error == JVMTI_ERROR_NONE);
+        (void)error;
 
         jobject objRef = BridgeContext.JNIenv->NewGlobalRef(obj);
-        HRESULT hr = CreateTrackerInstance(objRef, (IUnknown*)outer, (IUnknown**)instance);
+        HRESULT hr = CreateTrackerInstance(objRef, nullptr, (IUnknown**)instance);
         if (FAILED(hr))
             BridgeContext.JNIenv->NewGlobalRef(objRef);
 
@@ -109,6 +121,8 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved)
     jvmtiError err;
     jvmtiCapabilities capabilities{};
     capabilities.can_generate_garbage_collection_events = 1;
+    capabilities.can_generate_object_free_events = 1;
+    capabilities.can_tag_objects = 1;
     err = jvmti->AddCapabilities(&capabilities);
     if (err != JVMTI_ERROR_NONE)
     {
@@ -121,6 +135,7 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved)
     cb.VMInit = &VMInit;
     cb.GarbageCollectionStart = &GCStartCallback;
     cb.GarbageCollectionFinish = &GCFinishCallback;
+    cb.ObjectFree = &ObjectFreeCallback;
     err = jvmti->SetEventCallbacks(&cb, sizeof(cb));
     if (err != JVMTI_ERROR_NONE)
     {
@@ -130,8 +145,9 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved)
 
     std::array events = {
         JVMTI_EVENT_VM_INIT,
-        // JVMTI_EVENT_GARBAGE_COLLECTION_START,
-        // JVMTI_EVENT_GARBAGE_COLLECTION_FINISH
+        JVMTI_EVENT_GARBAGE_COLLECTION_START,
+        JVMTI_EVENT_GARBAGE_COLLECTION_FINISH,
+        JVMTI_EVENT_OBJECT_FREE
     };
     for (jvmtiEvent event : events)
     {

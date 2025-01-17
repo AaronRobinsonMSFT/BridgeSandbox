@@ -20,7 +20,7 @@ public class JavaApp {
         DotnetInit(s_BridgeContext);
 
         // Create the root Node instance.
-        s_Node = new Node();
+        s_Node = new Node(0);
 
         // Call the .NET main method.
         DotnetMain();

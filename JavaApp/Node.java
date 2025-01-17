@@ -1,22 +1,32 @@
 import java.util.ArrayList;
 
 public class Node implements INode {
-    private ArrayList<Object> instances = new ArrayList<>();
+    private ArrayList<Object> m_instances = new ArrayList<>();
+    private final int m_id;
+
+    public Node(int id) {
+        m_id = id;
+    }
 
     @Override
     public void addReference(Object instance) {
-        instances.add(instance);
+        m_instances.add(instance);
     }
 
     @Override
     public void clearReferences() {
-        instances.clear();
+        m_instances.clear();
     }
 
     @Override
     public void print(String prefix) {
-        System.out.println(prefix + "Node");
-        for (Object instance : instances) {
+        if (m_id == 0) {
+            System.out.println(prefix + "Root Node");
+        } else {
+            System.out.println(prefix + "Node " + m_id);
+        }
+
+        for (Object instance : m_instances) {
             if (instance instanceof INode) {
                 ((INode)instance).print("  " + prefix);
             }
@@ -24,6 +34,7 @@ public class Node implements INode {
     }
 
     public void print() {
-        print("&- ");
+        System.out.println("JVM object graph:");
+        print("|- ");
     }
 }

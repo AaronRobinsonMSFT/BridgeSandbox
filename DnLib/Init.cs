@@ -13,7 +13,7 @@ public unsafe struct BridgeContext
     public void* Jvmti;
     public void* JNIEnv;
     public delegate* unmanaged[Cdecl]<void*, void> Callback; // Cdecl is needed for x86 scenarios. Ignored on other platforms.
-    public delegate* unmanaged[Cdecl]<byte*, void*, void**, int> CreateObject;
+    public delegate* unmanaged[Cdecl]<byte*, int, void**, int> CreateObject;
     public delegate* unmanaged[Cdecl]<int, void*, void> SetObjectGraph;
 }
 
@@ -31,9 +31,6 @@ public unsafe sealed class Init
         Console.WriteLine("DnLib!DnLib.Init.Initialize()");
 
         s_BridgeContext = (BridgeContext*)bridgeContextRaw;
-
-        // Use the supplied callback to call back into the Bridge.
-        s_BridgeContext->Callback(s_BridgeContext);
     }
 
     [UnmanagedCallersOnly(
@@ -51,28 +48,61 @@ public unsafe sealed class Init
                 Create<JavaNode>()
             )
         );
-        root.AddReference(
-            Create<DotnetNode>(
-                Create<JavaNode>()
-            )
-        );
 
-        root.Print("|-");
+        INode c1 = CreateTrimmableBranch();
+        root.AddReference(c1);
 
-        Marshaler marshaler = new(root.BuildJavaReferenceGraph());
-        try
+        root.Print("1-");
+
         {
+            using Marshaler marshaler = new(root.BuildJavaReferenceGraph());
             s_BridgeContext->SetObjectGraph(marshaler.Length, (void*)marshaler.Ptr);
+            GC.Collect();
         }
-        finally
+
+        Console.WriteLine($"Manually mark collectible nodes");
         {
-            marshaler.Dispose();
+            using Marshaler marshaler = new(root.BuildJavaReferenceGraph(c1));
+            s_BridgeContext->SetObjectGraph(marshaler.Length, (void*)marshaler.Ptr);
+            GC.Collect();
         }
+
+        root.Print("2-");
+
+        Console.WriteLine("Manually prune .NET references");
+        root.PruneReferences();
+
+        root.Print("3-");
 
         GC.Collect();
         GC.WaitForPendingFinalizers();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
 
-        root.Print("|-");
+        // Use the supplied callback to call back into the Bridge.
+        s_BridgeContext->Callback(s_BridgeContext);
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static INode CreateTrimmableBranch()
+        {
+            return Create<DotnetNode>(
+                Create<JavaNode>(
+                    Create<DotnetNode>(),
+                    Create<JavaNode>(),
+                    Create<JavaNode>()
+                ),
+                Create<DotnetNode>(
+                    Create<DotnetNode>(
+                        Create<JavaNode>(),
+                        Create<JavaNode>()
+                    ),
+                    Create<JavaNode>(),
+                    Create<JavaNode>(),
+                    Create<JavaNode>()
+                ),
+                Create<JavaNode>()
+            );
+        }
     }
 
     public static T Create<T>(params INode[] children) where T: INode, new()
@@ -107,6 +137,7 @@ public unsafe sealed class Init
                 res->References = (IntPtr*)NativeMemory.Alloc((nuint)(sizeof(IntPtr) * (refLen + 1)));
                 refs.References.CopyTo(new Span<IntPtr>(res->References, refLen));
                 res->References[refLen] = IntPtr.Zero; // Null-terminate the array.
+                res->Collectible = refs.Collectible ? (byte)1 : (byte)0;
                 res++;
             }
         }
@@ -116,6 +147,7 @@ public unsafe sealed class Init
             var res = (JavaReferencesUnmanaged*)Ptr;
             foreach (var refs in new Span<JavaReferencesUnmanaged>((void*)Ptr, Length))
             {
+                Marshal.Release(refs.Handle);
                 for (int i = 0; refs.References[i] != IntPtr.Zero; i++)
                 {
                     Marshal.Release(refs.References[i]);
@@ -130,6 +162,7 @@ public unsafe sealed class Init
         {
             public IntPtr Handle;
             public IntPtr* References;
+            public byte Collectible;
         }
     }
 }
@@ -145,10 +178,11 @@ public struct JavaReferences
 {
     public IntPtr Handle;
     public IntPtr[] References;
+    public bool Collectible;
 
     public override string ToString()
     {
-        return $"Handle: {Handle:X}, References: {string.Join(", ", References.Select(r => r.ToString("X")))}";
+        return $"Handle: {Handle:X}, References: {string.Join(", ", References.Select(r => r.ToString("X")))}, Collectible: {Collectible}";
     }
 }
 
@@ -158,9 +192,14 @@ public abstract class BaseNode
 
     protected virtual IntPtr Handle { get; }
 
-    public JavaReferences[] BuildJavaReferenceGraph()
+    public bool Collectible { get; private set; } = false;
+
+    public JavaReferences[] BuildJavaReferenceGraph(params INode[] collectibleNodes)
     {
         IntPtr handle = Handle;
+
+        // Check if the object is collectible.
+        Collectible = collectibleNodes.Any(c => ReferenceEquals(c, this));
 
         List<IntPtr> directs = new();
         List<JavaReferences> references = new();
@@ -170,11 +209,11 @@ public abstract class BaseNode
             if (inst is JavaNode javaNode)
             {
                 directs.Add(javaNode.Handle);
-                refs = javaNode.BuildJavaReferenceGraph();
+                refs = javaNode.BuildJavaReferenceGraph(collectibleNodes);
             }
             else if (inst is DotnetNode dnNode)
             {
-                refs = dnNode.BuildJavaReferenceGraph();
+                refs = dnNode.BuildJavaReferenceGraph(collectibleNodes);
             }
             else
             {
@@ -183,19 +222,40 @@ public abstract class BaseNode
 
             Debug.Assert(refs.Length >= 1);
             ref JavaReferences direct = ref refs[0];
-            if (direct.Handle == IntPtr.Zero)
-            {
-                // Fold the direct references into the current node.
-                directs.AddRange(direct.References);
-                references.AddRange(refs.Skip(1));
-            }
-            else
+            if (direct.Handle != IntPtr.Zero)
             {
                 references.AddRange(refs);
             }
+            else
+            {
+                // Fold the direct references into the current node, if the removed node isn't collectible.
+                if (!direct.Collectible)
+                {
+                    directs.AddRange(direct.References);
+                }
+
+                // Propagate the collectible state to the references.
+                foreach (JavaReferences r in refs.Skip(1))
+                {
+                    references.Add(r with { Collectible = direct.Collectible });
+                }
+            }
         }
 
-        return references.Prepend(new JavaReferences { Handle = handle, References = directs.ToArray() }).ToArray();
+        return references.Prepend(new JavaReferences { Handle = handle, References = directs.ToArray(), Collectible = Collectible }).ToArray();
+    }
+
+    public void PruneReferences()
+    {
+        foreach (object inst in _references)
+        {
+            if (inst is BaseNode node)
+            {
+                node.PruneReferences();
+            }
+        }
+
+        _references.RemoveAll(r => r is BaseNode node && node.Collectible);
     }
 }
 
@@ -204,7 +264,7 @@ public interface INode
     void AddReference(object obj);
     void ClearReferences();
 
-    // Utility methods for prototyping.
+    // Utility method for prototyping.
     void Print(string prefix);
 }
 
@@ -235,22 +295,24 @@ public class DotnetNode : BaseNode, INode
 
 public unsafe class JavaNode : BaseNode, INode
 {
+    private static int s_Counter = 0;
     private IJVMObject _jvmObj;
+    private readonly int _id;
 
     public JavaNode()
     {
+        _id = ++s_Counter;
+
         void* instance;
         ReadOnlySpan<byte> className = "Node"u8;
         fixed (byte* ptr = &ReadOnlySpanMarshaller<byte, byte>.ManagedToUnmanagedIn.GetPinnableReference(className))
         {
-            int hr = Init.s_BridgeContext->CreateObject(ptr, null, &instance);
+            int hr = Init.s_BridgeContext->CreateObject(ptr, _id, &instance);
             Marshal.ThrowExceptionForHR(hr);
         }
 
         _jvmObj = (IJVMObject)Init.s_JavaWrappers.GetOrCreateObjectForComInstance((IntPtr)instance, CreateObjectFlags.TrackerObject);
         Marshal.Release((IntPtr)instance);
-
-        Console.WriteLine($"JNI Handle: {_jvmObj.GetJNIHandle():X}");
     }
 
     protected override IntPtr Handle
@@ -274,7 +336,9 @@ public unsafe class JavaNode : BaseNode, INode
 
     public void Print(string prefix)
     {
-        Console.WriteLine($"{prefix} {nameof(JavaNode)} (0x{_jvmObj.GetJNIHandle():x})");
+        nint h = _jvmObj.GetJNIHandle();
+        Console.WriteLine($"{prefix} {nameof(JavaNode)} {_id} {(h == IntPtr.Zero ? "Collected " : string.Empty)}({h:X})");
+
         foreach (object reference in _references)
         {
             if (reference is INode node)
