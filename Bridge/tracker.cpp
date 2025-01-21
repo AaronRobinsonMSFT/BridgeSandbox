@@ -536,6 +536,8 @@ HRESULT CreateTrackerInstance(jobject obj, IUnknown** tracker)
     assert(obj != nullptr);
     try
     {
+        // We can also let the .NET runtime know there is additional memory pressure
+        // using IReferenceTrackerHost::AddMemoryPressure().
         TrackerObject* pTracker = new TrackerObject(obj);
         HRESULT hr = pTracker->QueryInterface(IID_IUnknown, (void**)tracker);
         (void)pTracker->Release();

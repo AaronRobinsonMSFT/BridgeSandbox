@@ -53,15 +53,15 @@ public unsafe sealed class Init
         root.Print("1-");
 
         {
-            using Marshaler marshaler = new(root.BuildJavaReferenceGraph());
-            s_BridgeContext->SetObjectGraph(marshaler.Length, (void*)marshaler.Ptr);
+            using Marshaller marshaller = new(root.BuildJavaReferenceGraph());
+            s_BridgeContext->SetObjectGraph(marshaller.Length, (void*)marshaller.Ptr);
             GC.Collect();
         }
 
         Console.WriteLine($"Manually mark collectible nodes");
         {
-            using Marshaler marshaler = new(root.BuildJavaReferenceGraph(c1));
-            s_BridgeContext->SetObjectGraph(marshaler.Length, (void*)marshaler.Ptr);
+            using Marshaller marshaller = new(root.BuildJavaReferenceGraph(c1));
+            s_BridgeContext->SetObjectGraph(marshaller.Length, (void*)marshaller.Ptr);
             GC.Collect();
         }
 
@@ -117,12 +117,12 @@ public unsafe sealed class Init
         return obj;
     }
 
-    private struct Marshaler : IDisposable
+    private struct Marshaller : IDisposable
     {
         public int Length { get; }
         public IntPtr Ptr { get; }
 
-        public Marshaler(JavaReferences[] allReferences)
+        public Marshaller(JavaReferences[] allReferences)
         {
             var res = (JavaReferencesUnmanaged*)NativeMemory.Alloc((nuint)(sizeof(JavaReferencesUnmanaged) * allReferences.Length));
             Ptr = (IntPtr)res;
