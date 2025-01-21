@@ -96,7 +96,7 @@ namespace
         (void)error;
 
         jobject objRef = BridgeContext.JNIenv->NewGlobalRef(obj);
-        HRESULT hr = CreateTrackerInstance(objRef, nullptr, (IUnknown**)instance);
+        HRESULT hr = CreateTrackerInstance(objRef, (IUnknown**)instance);
         if (FAILED(hr))
             BridgeContext.JNIenv->NewGlobalRef(objRef);
 

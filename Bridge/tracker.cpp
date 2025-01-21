@@ -76,6 +76,9 @@ namespace API
 
 namespace
 {
+    // Using an inner implementation class to enable casting from the identity
+    // IUnknown to the underlying implementation. See ReferenceTrackingStarted() below
+    // and the Handle that is returned in the managed implementation.
     class TrackerObject final : public IUnknown
     {
         class TrackerObjectImpl final : public API::IJVMObject, public API::IReferenceTracker
@@ -90,6 +93,7 @@ namespace
                 , _trackerSourceCount{ 0 }
                 , _instance{ instance }
             {
+                assert(_implOuter != nullptr);
                 assert(_instance != nullptr);
             }
 
@@ -135,14 +139,12 @@ namespace
         };
 
         std::atomic<uint32_t> _refCount;
-        IUnknown* _outer;
         TrackerObjectImpl _impl;
 
     public:
-        TrackerObject(_In_ jobject instance, _In_opt_ IUnknown* pUnkOuter)
+        TrackerObject(_In_ jobject instance)
             : _refCount{ 1 }
-            , _outer{ pUnkOuter == nullptr ? static_cast<IUnknown*>(this) : pUnkOuter }
-            , _impl{ instance, _outer }
+            , _impl{ instance, static_cast<IUnknown*>(this) }
         {
         }
 
@@ -169,10 +171,10 @@ namespace
                 return E_POINTER;
 
             IUnknown* tgt;
-
-            // Aggregation implementation.
             if (riid == IID_IUnknown)
             {
+                // This "outer" only supports IUnknown to permit direct casting
+                // to this outer class.
                 tgt = static_cast<IUnknown*>(this);
             }
             else
@@ -529,14 +531,14 @@ void InitializeTrackerHost(jvmtiEnv* jvmti, JNIEnv* env)
     TrackerRuntimeManager.SetJVMState(jvmti, env);
 }
 
-HRESULT CreateTrackerInstance(jobject obj, IUnknown* outer, IUnknown** tracker)
+HRESULT CreateTrackerInstance(jobject obj, IUnknown** tracker)
 {
     assert(obj != nullptr);
     try
     {
-        TrackerObject* pTracker = new TrackerObject(obj, outer);
+        TrackerObject* pTracker = new TrackerObject(obj);
         HRESULT hr = pTracker->QueryInterface(IID_IUnknown, (void**)tracker);
-        pTracker->Release();
+        (void)pTracker->Release();
         return hr;
     }
     catch (std::bad_alloc const&)

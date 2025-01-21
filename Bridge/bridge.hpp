@@ -10,4 +10,4 @@ void JNICALL SetObjectGraph(int length, void* graph);
 
 void InitializeTrackerHost(jvmtiEnv* jvmti, JNIEnv* env);
 
-HRESULT CreateTrackerInstance(jobject obj, IUnknown* outer, IUnknown** tracker);
+HRESULT CreateTrackerInstance(jobject obj, IUnknown** tracker);
