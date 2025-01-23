@@ -1,6 +1,7 @@
 // Standard headers
 #include <cstdio>
 #include <cstdlib>
+#include <cinttypes>
 #include <array>
 #include <cassert>
 
@@ -76,7 +77,7 @@ namespace
 
     void JNICALL ObjectFreeCallback(jvmtiEnv*, jlong tag)
     {
-        std::printf("JVM Object freed: %lld\n", tag);
+        std::printf("JVM Object freed: %" PRId64 "\n", (int64_t)tag);
     }
 
     void JNICALL DotnetCallback(void* cxt)
