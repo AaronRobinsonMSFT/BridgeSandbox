@@ -66,6 +66,8 @@ namespace API
         STDMETHOD(PegFromTrackerSource)() = 0;
     };
 
+    // Interface used to expose JNI object handle to .NET.
+    //329b458a-98cf-41b2-80b4-4f3254af50b2
     const GUID IID_IJVMObject = { 0x329b458a, 0x98cf, 0x41b2, {0x80, 0xb4, 0x4f, 0x32, 0x54, 0xaf, 0x50, 0xb2} };
     class DECLSPEC_UUID("329b458a-98cf-41b2-80b4-4f3254af50b2") IJVMObject : public IUnknown
     {
@@ -254,6 +256,8 @@ namespace
             _jvmti = jvmti;
             _jnienv = env;
 
+            // Acquire the handles to trigger a GC
+            // https://docs.oracle.com/en/java/javase/20/docs/api/java.base/java/lang/System.html#gc()
             jclass systemClass = _jnienv->FindClass("java/lang/System");
             _systemClass = static_cast<jclass>(_jnienv->NewGlobalRef(systemClass));
             _gcMethod = _jnienv->GetStaticMethodID(_systemClass, "gc", "()V");
@@ -298,6 +302,8 @@ namespace
 
         void SetObjectGraph(int32_t length, void* graph)
         {
+            assert(_objectGraphLength == 0);
+            assert(_objectGraphTmp == nullptr);
             _objectGraphLength = length;
             _objectGraphTmp = graph;
         }
@@ -328,6 +334,15 @@ namespace
             _jnienv->CallVoidMethod(target, _nodeAddReference, reference);
         }
 
+        void JVMClearReferences(jobject target)
+        {
+            assert(_jnienv != nullptr);
+            assert(_nodeClearReferences != nullptr);
+            assert(target != nullptr);
+
+            _jnienv->CallVoidMethod(target, _nodeClearReferences);
+        }
+
         void JVMConvertToWeakReference(TrackerObject* obj)
         {
             assert(_jnienv != nullptr);
@@ -349,11 +364,35 @@ namespace
             obj->SetJNIHandle(ref);
             _jnienv->DeleteWeakGlobalRef(weakRef);
 
+            // Converting a weak to strong handle can result in
+            // null, which indicates the object was collected.
             return ref != nullptr;
         }
 
+        void MarkManagedObjectAsRoot(IUnknown* lifetime)
+        {
+            assert(lifetime != nullptr);
+
+            dncp::com_ptr<API::IReferenceTrackerTarget> target;
+            HRESULT hr = lifetime->QueryInterface(API::IID_IReferenceTrackerTarget, (void**)&target);
+            assert(hr == S_OK);
+            (void)target->Peg();
+            (void)target->AddRefFromReferenceTracker();
+        }
+
+        void UnmarkManagedObjectAsRoot(IUnknown* lifetime)
+        {
+            assert(lifetime != nullptr);
+
+            dncp::com_ptr<API::IReferenceTrackerTarget> target;
+            HRESULT hr = lifetime->QueryInterface(API::IID_IReferenceTrackerTarget, (void**)&target);
+            assert(hr == S_OK);
+            (void)target->ReleaseFromReferenceTracker();
+            (void)target->Unpeg();
+        }
+
         // See JavaReferencesUnmanaged in Init.cs
-        struct JavaReferences
+        struct JavaReferences final
         {
             TrackerObject* Object;
             IUnknown* ObjectManagedLifetime;
@@ -370,7 +409,6 @@ namespace
             std::printf("TrackerRuntimeManagerImpl::ReferenceTrackingStarted()\n");
 
             // Reify the object graph in the JVM
-            HRESULT hr;
             JavaReferences* objGraph = (JavaReferences*)_objectGraphTmp;
             for (int32_t i = 0; i < _objectGraphLength; ++i)
             {
@@ -388,14 +426,14 @@ namespace
                     JVMAddReference(r.Object->GetJNIHandle(), r.References[j]->GetJNIHandle());
             }
 
-            JVMPrintNode();
-
-            // Convert all references to weak references
+            // Convert all JVM references to weak references
             for (int32_t i = 0; i < _objectGraphLength; ++i)
             {
                 JavaReferences& r = objGraph[i];
                 JVMConvertToWeakReference(r.Object);
             }
+
+            JVMPrintNode();
 
             JVMTriggerGC();
 
@@ -405,20 +443,15 @@ namespace
                 JavaReferences& r = objGraph[i];
                 if (JVMConvertToStrongReference(r.Object))
                 {
-                    _jnienv->CallVoidMethod(r.Object->GetJNIHandle(), _nodeClearReferences);
+                    JVMClearReferences(r.Object->GetJNIHandle());
 
-                    dncp::com_ptr<API::IReferenceTrackerTarget> target;
-                    hr = r.ObjectManagedLifetime->QueryInterface(API::IID_IReferenceTrackerTarget, (void**)&target);
-                    if (hr == S_OK)
-                    {
-                        (void)target->Peg();
-                        (void)target->AddRefFromReferenceTracker();
-                    }
+                    // Mark the associated managed object as a root so the GC doesn't mark it as collectible.
+                    MarkManagedObjectAsRoot(r.ObjectManagedLifetime);
                 }
             }
 
             // Clear the references in the root node
-            _jnienv->CallVoidMethod(_rootNode, _nodeClearReferences);
+            JVMClearReferences(_rootNode);
 
             return S_OK;
         }
@@ -436,20 +469,14 @@ namespace
 
             std::printf("TrackerRuntimeManagerImpl::ReferenceTrackingCompleted()\n");
 
-            HRESULT hr;
             JavaReferences* objGraph = (JavaReferences*)_objectGraphTmp;
             for (int32_t i = 0; i < _objectGraphLength; ++i)
             {
                 JavaReferences& r = objGraph[i];
                 if (r.Object->GetJNIHandle() != 0)
                 {
-                    dncp::com_ptr<API::IReferenceTrackerTarget> target;
-                    hr = r.ObjectManagedLifetime->QueryInterface(API::IID_IReferenceTrackerTarget, (void**)&target);
-                    if (hr == S_OK)
-                    {
-                        (void)target->ReleaseFromReferenceTracker();
-                        (void)target->Unpeg();
-                    }
+                    // Unmark the associated managed object as a root after the tracking is complete.
+                    UnmarkManagedObjectAsRoot(r.ObjectManagedLifetime);
                 }
             }
 
@@ -557,17 +584,18 @@ void InitializeTrackerHost(jvmtiEnv* jvmti, JNIEnv* env)
     TrackerRuntimeManager.SetJVMState(jvmti, env);
 }
 
-HRESULT CreateTrackerInstance(jobject obj, IUnknown** tracker)
+HRESULT CreateTrackerInstance(jobject obj, IUnknown** result)
 {
     assert(obj != nullptr);
+    assert(result != nullptr);
 
-    dncp::com_ptr<TrackerObject> pTracker;
+    dncp::com_ptr<TrackerObject> tracker;
     try
     {
         // We can also let the .NET runtime know there is additional memory pressure
         // using IReferenceTrackerHost::AddMemoryPressure().
-        pTracker.Attach(new TrackerObject(obj));
-        return pTracker->QueryInterface(IID_IUnknown, (void**)tracker);
+        tracker.Attach(new TrackerObject(obj));
+        return tracker->QueryInterface(IID_IUnknown, (void**)result);
     }
     catch (std::bad_alloc const&)
     {

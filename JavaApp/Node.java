@@ -4,7 +4,12 @@ public class Node implements INode {
     private ArrayList<Object> m_instances = new ArrayList<>();
     private final int m_id;
 
+    public Node() {
+        m_id = 0;
+    }
+
     public Node(int id) {
+        assert id != 0;
         m_id = id;
     }
 

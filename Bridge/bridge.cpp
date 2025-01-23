@@ -60,6 +60,7 @@ namespace
         // Set static field value to the address of the BridgeContext.
         // This will be passed to a native export to the .NET environment.
         env->SetStaticLongField(classID, fieldID, (jlong)&BridgeContext);
+        env->DeleteLocalRef(classID);
 
         // Initialize the tracker host with the JVM details.
         InitializeTrackerHost(jvmti, env);
@@ -99,7 +100,7 @@ namespace
         jobject objRef = BridgeContext.JNIenv->NewGlobalRef(obj);
         HRESULT hr = CreateTrackerInstance(objRef, (IUnknown**)instance);
         if (FAILED(hr))
-            BridgeContext.JNIenv->NewGlobalRef(objRef);
+            BridgeContext.JNIenv->DeleteGlobalRef(objRef);
 
         BridgeContext.JNIenv->DeleteLocalRef(obj);
         BridgeContext.JNIenv->DeleteLocalRef(klass);

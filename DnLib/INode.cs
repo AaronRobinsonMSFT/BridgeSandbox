@@ -1,4 +1,3 @@
-
 namespace DnLib;
 
 public interface INode
