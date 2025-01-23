@@ -6,13 +6,14 @@ namespace DnLib;
 [StructLayout(LayoutKind.Sequential)]
 public struct JavaReferences
 {
-    public IntPtr Handle;
+    public IntPtr Object;
+    public object ObjectManagedLifetime;
     public IntPtr[] References;
     public bool Collectible;
 
     public override string ToString()
     {
-        return $"Handle: {Handle:X}, References: {string.Join(", ", References.Select(r => r.ToString("X")))}, Collectible: {Collectible}";
+        return $"Object: {Object:X}, ObjectManagedLifetime: {ObjectManagedLifetime}, References: {string.Join(", ", References.Select(r => r.ToString("X")))}, Collectible: {Collectible}";
     }
 }
 
@@ -26,8 +27,6 @@ public abstract class BaseNode
 
     public JavaReferences[] BuildJavaReferenceGraph(params INode[] collectibleNodes)
     {
-        IntPtr handle = Handle;
-
         // Check if the object is collectible.
         Collectible = collectibleNodes.Any(c => ReferenceEquals(c, this));
 
@@ -52,7 +51,7 @@ public abstract class BaseNode
 
             Debug.Assert(refs.Length >= 1);
             ref JavaReferences direct = ref refs[0];
-            if (direct.Handle != IntPtr.Zero)
+            if (direct.Object != IntPtr.Zero)
             {
                 references.AddRange(refs);
             }
@@ -63,6 +62,14 @@ public abstract class BaseNode
                 {
                     directs.AddRange(direct.References);
                 }
+                else
+                {
+                    // Since the references are being dropped, we need to Release them.
+                    foreach (IntPtr r in direct.References)
+                    {
+                        Marshal.Release(r);
+                    }
+                }
 
                 // Propagate the collectible state to the references.
                 foreach (JavaReferences r in refs.Skip(1))
@@ -72,7 +79,7 @@ public abstract class BaseNode
             }
         }
 
-        return references.Prepend(new JavaReferences { Handle = handle, References = directs.ToArray(), Collectible = Collectible }).ToArray();
+        return references.Prepend(new JavaReferences { Object = Handle, ObjectManagedLifetime = this, References = directs.ToArray(), Collectible = Collectible }).ToArray();
     }
 
     public void PruneReferences()

@@ -70,21 +70,21 @@ namespace API
     class DECLSPEC_UUID("329b458a-98cf-41b2-80b4-4f3254af50b2") IJVMObject : public IUnknown
     {
     public:
-        STDMETHOD(GetJNIHandle)(_Out_ intptr_t* target) = 0;
+        STDMETHOD_(intptr_t, GetJNIHandle)() = 0;
     };
 }
 
 namespace
 {
     // Using an inner implementation class to enable casting from the identity
-    // IUnknown to the underlying implementation. See ReferenceTrackingStarted() below
-    // and the Handle that is returned in the managed implementation.
+    // IUnknown to the underlying implementation. See IReferenceTrackerManager::ReferenceTrackingStarted()
+    // below and the JavaNode.Handle property in the managed implementation.
     class TrackerObject final : public IUnknown
     {
         class TrackerObjectImpl final : public API::IJVMObject, public API::IReferenceTracker
         {
             IUnknown* _implOuter;
-            std::atomic<int> _trackerSourceCount;
+            std::atomic<int32_t> _trackerSourceCount;
             jobject _instance;
 
         public:
@@ -105,11 +105,9 @@ namespace
             }
 
         public: // IJVMObject
-            STDMETHOD(GetJNIHandle)(_Out_ intptr_t* target)
+            STDMETHOD_(intptr_t, GetJNIHandle)()
             {
-                assert(target != nullptr);
-                *target = reinterpret_cast<intptr_t>(_instance);
-                return S_OK;
+                return reinterpret_cast<intptr_t>(_instance);
             }
 
         public: // IReferenceTracker
@@ -148,13 +146,14 @@ namespace
         {
         }
 
-        ~TrackerObject() = default;
+        ~TrackerObject()
+        {
+            std::printf("TrackerObject::~TrackerObject(): %p\n", this);
+        }
 
         jobject GetJNIHandle()
         {
-            intptr_t handle = 0;
-            (void)_impl.GetJNIHandle(&handle);
-            return reinterpret_cast<jobject>(handle);
+            return reinterpret_cast<jobject>(_impl.GetJNIHandle());
         }
 
         void SetJNIHandle(jobject handle)
@@ -229,7 +228,7 @@ namespace
         jmethodID _nodeAddReference;
         jmethodID _nodeClearReferences;
 
-        int _objectGraphLength;
+        int32_t _objectGraphLength;
         void* _objectGraphTmp;
 
     public:
@@ -297,7 +296,7 @@ namespace
             _jnienv->DeleteLocalRef(javaAppClass);
         }
 
-        void SetObjectGraph(int length, void* graph)
+        void SetObjectGraph(int32_t length, void* graph)
         {
             _objectGraphLength = length;
             _objectGraphTmp = graph;
@@ -353,6 +352,15 @@ namespace
             return ref != nullptr;
         }
 
+        // See JavaReferencesUnmanaged in Init.cs
+        struct JavaReferences
+        {
+            TrackerObject* Object;
+            IUnknown* ObjectManagedLifetime;
+            TrackerObject** References;
+            uint8_t Collectible;
+        };
+
     public: // IReferenceTrackerManager
         STDMETHOD(ReferenceTrackingStarted)()
         {
@@ -361,17 +369,10 @@ namespace
 
             std::printf("TrackerRuntimeManagerImpl::ReferenceTrackingStarted()\n");
 
-            // See JavaReferencesUnmanaged in Init.cs
-            struct JavaReferences
-            {
-                TrackerObject* Object;
-                TrackerObject** References;
-                uint8_t Collectible;
-            };
-
             // Reify the object graph in the JVM
+            HRESULT hr;
             JavaReferences* objGraph = (JavaReferences*)_objectGraphTmp;
-            for (int i = 0; i < _objectGraphLength; ++i)
+            for (int32_t i = 0; i < _objectGraphLength; ++i)
             {
                 JavaReferences& r = objGraph[i];
 
@@ -383,14 +384,14 @@ namespace
                 if (i == 0)
                     JVMAddReference(_rootNode, r.Object->GetJNIHandle());
 
-                for (int j = 0; r.References[j] != nullptr; ++j)
+                for (int32_t j = 0; r.References[j] != nullptr; ++j)
                     JVMAddReference(r.Object->GetJNIHandle(), r.References[j]->GetJNIHandle());
             }
 
             JVMPrintNode();
 
             // Convert all references to weak references
-            for (int i = 0; i < _objectGraphLength; ++i)
+            for (int32_t i = 0; i < _objectGraphLength; ++i)
             {
                 JavaReferences& r = objGraph[i];
                 JVMConvertToWeakReference(r.Object);
@@ -399,12 +400,20 @@ namespace
             JVMTriggerGC();
 
             // Convert all references back to strong references and clear references in Java.
-            for (int i = 0; i < _objectGraphLength; ++i)
+            for (int32_t i = 0; i < _objectGraphLength; ++i)
             {
                 JavaReferences& r = objGraph[i];
                 if (JVMConvertToStrongReference(r.Object))
                 {
                     _jnienv->CallVoidMethod(r.Object->GetJNIHandle(), _nodeClearReferences);
+
+                    dncp::com_ptr<API::IReferenceTrackerTarget> target;
+                    hr = r.ObjectManagedLifetime->QueryInterface(API::IID_IReferenceTrackerTarget, (void**)&target);
+                    if (hr == S_OK)
+                    {
+                        (void)target->Peg();
+                        (void)target->AddRefFromReferenceTracker();
+                    }
                 }
             }
 
@@ -426,6 +435,23 @@ namespace
                 return S_OK;
 
             std::printf("TrackerRuntimeManagerImpl::ReferenceTrackingCompleted()\n");
+
+            HRESULT hr;
+            JavaReferences* objGraph = (JavaReferences*)_objectGraphTmp;
+            for (int32_t i = 0; i < _objectGraphLength; ++i)
+            {
+                JavaReferences& r = objGraph[i];
+                if (r.Object->GetJNIHandle() != 0)
+                {
+                    dncp::com_ptr<API::IReferenceTrackerTarget> target;
+                    hr = r.ObjectManagedLifetime->QueryInterface(API::IID_IReferenceTrackerTarget, (void**)&target);
+                    if (hr == S_OK)
+                    {
+                        (void)target->ReleaseFromReferenceTracker();
+                        (void)target->Unpeg();
+                    }
+                }
+            }
 
             // Reset object graph state
             _objectGraphTmp = nullptr;
@@ -450,11 +476,11 @@ namespace
             if (ppvObject == nullptr)
                 return E_POINTER;
 
-            if (IsEqualIID(riid, API::IID_IReferenceTrackerManager))
+            if (riid == API::IID_IReferenceTrackerManager)
             {
                 *ppvObject = static_cast<API::IReferenceTrackerManager*>(this);
             }
-            else if (IsEqualIID(riid, IID_IUnknown))
+            else if (riid == IID_IUnknown)
             {
                 *ppvObject = static_cast<IUnknown*>(this);
             }
@@ -478,7 +504,7 @@ namespace
 
     HRESULT STDMETHODCALLTYPE TrackerObject::TrackerObjectImpl::DisconnectFromTrackerSource()
     {
-        std::printf("TrackerObject being finalized in .NET: %p\n", this);
+        std::printf("TrackerObject being finalized in .NET: %p\n", (TrackerObject*)_implOuter);
         return S_OK;
     }
 
@@ -521,7 +547,7 @@ namespace
     }
 }
 
-void JNICALL SetObjectGraph(int length, void* graph)
+void JNICALL SetObjectGraph(int32_t length, void* graph)
 {
     TrackerRuntimeManager.SetObjectGraph(length, graph);
 }
@@ -534,14 +560,14 @@ void InitializeTrackerHost(jvmtiEnv* jvmti, JNIEnv* env)
 HRESULT CreateTrackerInstance(jobject obj, IUnknown** tracker)
 {
     assert(obj != nullptr);
+
+    dncp::com_ptr<TrackerObject> pTracker;
     try
     {
         // We can also let the .NET runtime know there is additional memory pressure
         // using IReferenceTrackerHost::AddMemoryPressure().
-        TrackerObject* pTracker = new TrackerObject(obj);
-        HRESULT hr = pTracker->QueryInterface(IID_IUnknown, (void**)tracker);
-        (void)pTracker->Release();
-        return hr;
+        pTracker.Attach(new TrackerObject(obj));
+        return pTracker->QueryInterface(IID_IUnknown, (void**)tracker);
     }
     catch (std::bad_alloc const&)
     {

@@ -53,12 +53,12 @@ public unsafe class JavaNode : BaseNode, INode, IJVMObject
         {
             throw new NotSupportedException("Only supports IJVMObject");
         }
-        Marshal.Release(instance);
+        int rc = Marshal.Release(instance);
+        Debug.Assert(rc == 1);
         Debug.Assert(jvmObjectInst != 0);
 
         _instanceRaw = jvmObjectInst;
-        Init.s_JavaWrappers.GetOrRegisterObjectForComInstance(jvmObjectInst, CreateObjectFlags.TrackerObject, this, IntPtr.Zero);
-        Marshal.Release(jvmObjectInst);
+        Init.s_JavaWrappers.GetOrRegisterObjectForComInstance(_instanceRaw, CreateObjectFlags.TrackerObject, this, IntPtr.Zero);
     }
 
     ~JavaNode()
@@ -88,7 +88,9 @@ public unsafe class JavaNode : BaseNode, INode, IJVMObject
     public void Print(string prefix)
     {
         nint h = GetJNIHandle();
-        Console.WriteLine($"{prefix} {nameof(JavaNode)} {_id} {(h == IntPtr.Zero ? "Collected " : string.Empty)}({h:X})");
+        nint id = Handle;
+        Console.WriteLine($"{prefix} {nameof(JavaNode)} {_id} {(h == IntPtr.Zero ? "Collected " : string.Empty)}({h:X}) Identity: {id:X}");
+        Marshal.Release(id);
 
         foreach (object reference in _references)
         {
@@ -101,13 +103,8 @@ public unsafe class JavaNode : BaseNode, INode, IJVMObject
 
     public IntPtr GetJNIHandle()
     {
-        nint handle;
-        var fptr = ((delegate* unmanaged[MemberFunction]<IntPtr, nint*, int> )(*(*(void***)_instanceRaw + 3)));
-        int hr = fptr(_instanceRaw, &handle);
-        if (hr != 0)
-        {
-            throw new COMException($"{nameof(GetJNIHandle)}", hr);
-        }
+        var fptr = ((delegate* unmanaged[MemberFunction]<IntPtr, IntPtr> )(*(*(void***)_instanceRaw + 3)));
+        IntPtr handle = fptr(_instanceRaw);
         GC.KeepAlive(this);
         return handle;
     }

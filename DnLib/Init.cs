@@ -47,7 +47,21 @@ public unsafe sealed class Init
             )
         );
 
-        INode c1 = CreateTrimmableBranch();
+        Worker(root);
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+
+        // Use the supplied callback to call back into the Bridge.
+        s_BridgeContext->Callback(s_BridgeContext);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void Worker(JavaNode root)
+    {
+        INode c1 = CreateBranch();
         root.AddReference(c1);
 
         root.Print("1-");
@@ -58,7 +72,7 @@ public unsafe sealed class Init
             GC.Collect();
         }
 
-        Console.WriteLine($"Manually mark collectible nodes");
+        Console.WriteLine($"Mark collectible nodes");
         {
             using Marshaller marshaller = new(root.BuildJavaReferenceGraph(c1));
             s_BridgeContext->SetObjectGraph(marshaller.Length, (void*)marshaller.Ptr);
@@ -67,21 +81,13 @@ public unsafe sealed class Init
 
         root.Print("2-");
 
-        Console.WriteLine("Manually prune .NET references");
+        Console.WriteLine("Prune .NET references");
         root.PruneReferences();
 
         root.Print("3-");
 
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-
-        // Use the supplied callback to call back into the Bridge.
-        s_BridgeContext->Callback(s_BridgeContext);
-
         [MethodImpl(MethodImplOptions.NoInlining)]
-        static INode CreateTrimmableBranch()
+        static INode CreateBranch()
         {
             return Create<DotnetNode>(
                 Create<JavaNode>(
@@ -124,13 +130,14 @@ public unsafe sealed class Init
 
         public Marshaller(JavaReferences[] allReferences)
         {
-            var res = (JavaReferencesUnmanaged*)NativeMemory.Alloc((nuint)(sizeof(JavaReferencesUnmanaged) * allReferences.Length));
-            Ptr = (IntPtr)res;
             Length = allReferences.Length;
+            var res = (JavaReferencesUnmanaged*)NativeMemory.Alloc((nuint)(sizeof(JavaReferencesUnmanaged) * Length));
+            Ptr = (IntPtr)res;
 
             foreach (var refs in allReferences)
             {
-                res->Handle = refs.Handle;
+                res->Object = refs.Object;
+                res->ObjectManagedLifetime = Init.s_JavaWrappers.GetOrCreateComInterfaceForObject(refs.ObjectManagedLifetime, CreateComInterfaceFlags.TrackerSupport);
                 int refLen = refs.References.Length;
                 res->References = (IntPtr*)NativeMemory.Alloc((nuint)(sizeof(IntPtr) * (refLen + 1)));
                 refs.References.CopyTo(new Span<IntPtr>(res->References, refLen));
@@ -145,7 +152,8 @@ public unsafe sealed class Init
             var res = (JavaReferencesUnmanaged*)Ptr;
             foreach (var refs in new Span<JavaReferencesUnmanaged>((void*)Ptr, Length))
             {
-                Marshal.Release(refs.Handle);
+                Marshal.Release(refs.Object);
+                Marshal.Release(refs.ObjectManagedLifetime);
                 for (int i = 0; refs.References[i] != IntPtr.Zero; i++)
                 {
                     Marshal.Release(refs.References[i]);
@@ -158,7 +166,8 @@ public unsafe sealed class Init
         [StructLayout(LayoutKind.Sequential)]
         private struct JavaReferencesUnmanaged
         {
-            public IntPtr Handle;
+            public IntPtr Object;
+            public IntPtr ObjectManagedLifetime;
             public IntPtr* References;
             public byte Collectible;
         }
