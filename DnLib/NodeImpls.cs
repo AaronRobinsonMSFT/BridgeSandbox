@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Java;
 using System.Runtime.InteropServices.Marshalling;
 
 namespace DnLib;
@@ -29,10 +30,11 @@ public class DotnetNode : BaseNode, INode
     }
 }
 
-public unsafe class JavaNode : BaseNode, INode, IJVMObject
+public unsafe class JavaNode : BaseNode, INode
 {
     private static int s_Counter = 0;
-    private IntPtr _instanceRaw;
+    private GCHandle _handle;
+    private IntPtr* _jniHandlePtr;
     private readonly int _id;
 
     public JavaNode()
@@ -48,31 +50,23 @@ public unsafe class JavaNode : BaseNode, INode, IJVMObject
             Marshal.ThrowExceptionForHR(hr, (IntPtr)(-1));
         }
 
-        hr = Marshal.QueryInterface(instance, typeof(IJVMObject).GUID, out nint jvmObjectInst);
-        if (hr != 0)
-        {
-            throw new NotSupportedException("Only supports IJVMObject");
-        }
-        int rc = Marshal.Release(instance);
-        Debug.Assert(rc == 1);
-        Debug.Assert(jvmObjectInst != 0);
+        _jniHandlePtr = (IntPtr*)NativeMemory.Alloc((nuint)sizeof(void*));
+        _jniHandlePtr[0] = instance;
 
-        _instanceRaw = jvmObjectInst;
-        Init.s_JavaWrappers.GetOrRegisterObjectForComInstance(_instanceRaw, CreateObjectFlags.TrackerObject, this, IntPtr.Zero);
+#pragma warning disable CA1416 // Validate platform compatibility
+        _handle = JavaMarshal.CreateReferenceTrackingHandle(this, (IntPtr)_jniHandlePtr);
+#pragma warning restore CA1416 // Validate platform compatibility
     }
 
     ~JavaNode()
     {
-        Marshal.Release(_instanceRaw);
+        NativeMemory.Free(_jniHandlePtr);
+        _handle.Free();
     }
 
     protected override IntPtr Handle
     {
-        get
-        {
-            JavaWrappers.TryGetComInstance(this, out IntPtr ptr);
-            return ptr;
-        }
+        get => GCHandle.ToIntPtr(_handle);
     }
 
     public void AddReference(object obj)
@@ -87,10 +81,9 @@ public unsafe class JavaNode : BaseNode, INode, IJVMObject
 
     public void Print(string prefix)
     {
-        nint h = GetJNIHandle();
+        nint h = _jniHandlePtr[0];
         nint id = Handle;
         Console.WriteLine($"{prefix} {nameof(JavaNode)} {_id} {(h == IntPtr.Zero ? "Collected " : string.Empty)}({h:X}) Identity: {id:X}");
-        Marshal.Release(id);
 
         foreach (object reference in _references)
         {
@@ -99,13 +92,5 @@ public unsafe class JavaNode : BaseNode, INode, IJVMObject
                 node.Print("  " + prefix);
             }
         }
-    }
-
-    public IntPtr GetJNIHandle()
-    {
-        var fptr = ((delegate* unmanaged[MemberFunction]<IntPtr, IntPtr> )(*(*(void***)_instanceRaw + 3)));
-        IntPtr handle = fptr(_instanceRaw);
-        GC.KeepAlive(this);
-        return handle;
     }
 }

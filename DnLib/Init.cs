@@ -1,6 +1,8 @@
 ﻿using System.Collections;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Java;
 
 namespace DnLib;
 
@@ -11,13 +13,19 @@ internal unsafe struct BridgeContext
     public void* Jvmti;
     public void* JNIEnv;
     public delegate* unmanaged[Cdecl]<void*, void> Callback; // Cdecl is needed for x86 scenarios. Ignored on other platforms.
+    public delegate* unmanaged[Cdecl]<void> InitializeBridge;
     public delegate* unmanaged[Cdecl]<byte*, int, void**, int> CreateObject;
-    public delegate* unmanaged[Cdecl]<int, void*, void> SetObjectGraph;
+    public delegate* unmanaged<
+                nint,                               // Length of SCC collection
+                StronglyConnectedComponent*,        // SCC collection
+                nint,                               // Length of CCR collection
+                ComponentCrossReference*,           // CCR collection
+                delegate* unmanaged<nint, IntPtr, void>, // Callback to mark GCHandles
+                void> MarkCrossReferences;
 }
 
 public unsafe sealed class Init
 {
-    internal static JavaWrappers s_JavaWrappers = new JavaWrappers();
     internal static BridgeContext* s_BridgeContext;
 
     [UnmanagedCallersOnly(
@@ -29,6 +37,14 @@ public unsafe sealed class Init
         Console.WriteLine("DnLib!DnLib.Init.Initialize()");
 
         s_BridgeContext = (BridgeContext*)bridgeContextRaw;
+
+        Debug.Assert(s_BridgeContext->InitializeBridge is not null);
+        s_BridgeContext->InitializeBridge();
+
+        Debug.Assert(s_BridgeContext->MarkCrossReferences is not null);
+#pragma warning disable CA1416 // Validate platform compatibility
+        JavaMarshal.Initialize(s_BridgeContext->MarkCrossReferences);
+#pragma warning restore CA1416 // Validate platform compatibility
     }
 
     [UnmanagedCallersOnly(
@@ -67,24 +83,16 @@ public unsafe sealed class Init
         root.Print("1-");
 
         {
-            using Marshaller marshaller = new(root.BuildJavaReferenceGraph());
-            s_BridgeContext->SetObjectGraph(marshaller.Length, (void*)marshaller.Ptr);
             GC.Collect();
         }
 
         Console.WriteLine($"Mark collectible nodes");
         {
-            using Marshaller marshaller = new(root.BuildJavaReferenceGraph(c1));
-            s_BridgeContext->SetObjectGraph(marshaller.Length, (void*)marshaller.Ptr);
+            //using Marshaller marshaller = new(root.BuildJavaReferenceGraph(c1));
             GC.Collect();
         }
 
         root.Print("2-");
-
-        Console.WriteLine("Prune .NET references");
-        root.PruneReferences();
-
-        root.Print("3-");
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         static INode CreateBranch()
@@ -121,55 +129,5 @@ public unsafe sealed class Init
         }
 
         return obj;
-    }
-
-    private struct Marshaller : IDisposable
-    {
-        public int Length { get; }
-        public IntPtr Ptr { get; }
-
-        public Marshaller(JavaReferences[] allReferences)
-        {
-            Length = allReferences.Length;
-            var res = (JavaReferencesUnmanaged*)NativeMemory.Alloc((nuint)(sizeof(JavaReferencesUnmanaged) * Length));
-            Ptr = (IntPtr)res;
-
-            foreach (var refs in allReferences)
-            {
-                res->Object = refs.Object;
-                res->ObjectManagedLifetime = Init.s_JavaWrappers.GetOrCreateComInterfaceForObject(refs.ObjectManagedLifetime, CreateComInterfaceFlags.TrackerSupport);
-                int refLen = refs.References.Length;
-                res->References = (IntPtr*)NativeMemory.Alloc((nuint)(sizeof(IntPtr) * (refLen + 1)));
-                refs.References.CopyTo(new Span<IntPtr>(res->References, refLen));
-                res->References[refLen] = IntPtr.Zero; // Null-terminate the array.
-                res->Collectible = refs.Collectible ? (byte)1 : (byte)0;
-                res++;
-            }
-        }
-
-        public void Dispose()
-        {
-            var res = (JavaReferencesUnmanaged*)Ptr;
-            foreach (var refs in new Span<JavaReferencesUnmanaged>((void*)Ptr, Length))
-            {
-                Marshal.Release(refs.Object);
-                Marshal.Release(refs.ObjectManagedLifetime);
-                for (int i = 0; refs.References[i] != IntPtr.Zero; i++)
-                {
-                    Marshal.Release(refs.References[i]);
-                }
-                NativeMemory.Free((void*)refs.References);
-            }
-            NativeMemory.Free((void*)Ptr);
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct JavaReferencesUnmanaged
-        {
-            public IntPtr Object;
-            public IntPtr ObjectManagedLifetime;
-            public IntPtr* References;
-            public byte Collectible;
-        }
     }
 }

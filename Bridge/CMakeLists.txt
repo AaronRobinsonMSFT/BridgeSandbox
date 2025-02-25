@@ -7,14 +7,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Add the generated inc/ directory
 include_directories(${GENERATED_INC})
 
-include(FetchContent)
-FetchContent_Declare(
-    dncp
-    GIT_REPOSITORY https://github.com/AaronRobinsonMSFT/DNCP.git
-    GIT_TAG        803b819cb6476571cf6974a618b8dcb87ba1f86d
-)
-FetchContent_MakeAvailable(dncp)
-
 # Add JDK to path
 include_directories(${JDK_INC})
 if (WIN32)
@@ -37,12 +29,6 @@ add_library(bridge SHARED bridge.cpp tracker.cpp)
 
 if (MSVC)
     target_link_options(bridge PUBLIC /DEBUG)
-endif()
-
-target_link_libraries(bridge dncp::dncp)
-
-if (NOT MSVC)
-    target_link_libraries(bridge dncp::winhdrs)
 endif()
 
 install(TARGETS bridge DESTINATION $<CONFIG>/${CMAKE_GENERATOR_PLATFORM})

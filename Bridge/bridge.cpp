@@ -17,12 +17,14 @@ namespace
         jvmtiEnv* Jvmti;
         JNIEnv* JNIenv;
         void (JNICALL *Callback)(void*);
+        void (JNICALL *InitializeBridge)();
         HRESULT (JNICALL *CreateObject)(char const*, int32_t, void**);
-        void (JNICALL *SetObjectGraph)(int, void*);
+        decltype(&::MarkCrossReferences) MarkCrossReferences;
     } BridgeContext;
 
     // Forward declaration
     void JNICALL DotnetCallback(void* cxt);
+    void JNICALL InitializeBridge();
     HRESULT JNICALL CreateObject(char const* className, int32_t id, void** instance);
 
     void JNICALL VMInit(
@@ -37,8 +39,9 @@ namespace
         BridgeContext.Jvmti = jvmti;
         BridgeContext.JNIenv = env;
         BridgeContext.Callback = &DotnetCallback;
+        BridgeContext.InitializeBridge = &InitializeBridge;
         BridgeContext.CreateObject = &CreateObject;
-        BridgeContext.SetObjectGraph = &SetObjectGraph;
+        BridgeContext.MarkCrossReferences = &MarkCrossReferences;
 
         // Find the class and static field to update.
         char const* className = "JavaApp";
@@ -61,9 +64,6 @@ namespace
         // This will be passed to a native export to the .NET environment.
         env->SetStaticLongField(classID, fieldID, (jlong)&BridgeContext);
         env->DeleteLocalRef(classID);
-
-        // Initialize the tracker host with the JVM details.
-        InitializeTrackerHost(jvmti, env);
     }
 
     void JNICALL GCStartCallback(jvmtiEnv*)
@@ -86,6 +86,14 @@ namespace
         std::printf("Bridge!DotnetCallback()\n");
     }
 
+    void JNICALL InitializeBridge()
+    {
+        std::printf("Bridge!InitializeBridge()\n");
+
+        // Initialize the tracker host with the JVM details.
+        InitializeTrackerHost(BridgeContext.Jvmti, BridgeContext.JNIenv);
+    }
+
     HRESULT JNICALL CreateObject(char const* className, int32_t id, void** instance)
     {
         jclass klass = BridgeContext.JNIenv->FindClass(className);
@@ -97,14 +105,11 @@ namespace
         assert(error == JVMTI_ERROR_NONE);
         (void)error;
 
-        jobject objRef = BridgeContext.JNIenv->NewGlobalRef(obj);
-        HRESULT hr = CreateTrackerInstance(objRef, (IUnknown**)instance);
-        if (FAILED(hr))
-            BridgeContext.JNIenv->DeleteGlobalRef(objRef);
+        *instance = (void*)BridgeContext.JNIenv->NewGlobalRef(obj);
 
         BridgeContext.JNIenv->DeleteLocalRef(obj);
         BridgeContext.JNIenv->DeleteLocalRef(klass);
-        return hr;
+        return S_OK;
     }
 }
 
