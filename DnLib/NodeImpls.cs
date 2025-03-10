@@ -50,8 +50,11 @@ public unsafe class JavaNode : BaseNode, INode
             Marshal.ThrowExceptionForHR(hr, (IntPtr)(-1));
         }
 
+
         _jniHandlePtr = (IntPtr*)NativeMemory.Alloc((nuint)sizeof(void*));
         _jniHandlePtr[0] = instance;
+
+        Console.WriteLine($"JavaNode created {(long)_jniHandlePtr:X}");
 
 #pragma warning disable CA1416 // Validate platform compatibility
         _handle = JavaMarshal.CreateReferenceTrackingHandle(this, (IntPtr)_jniHandlePtr);

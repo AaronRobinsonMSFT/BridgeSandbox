@@ -20,7 +20,6 @@ internal unsafe struct BridgeContext
                 StronglyConnectedComponent*,        // SCC collection
                 nint,                               // Length of CCR collection
                 ComponentCrossReference*,           // CCR collection
-                delegate* unmanaged<nint, IntPtr, void>, // Callback to mark GCHandles
                 void> MarkCrossReferences;
 }
 

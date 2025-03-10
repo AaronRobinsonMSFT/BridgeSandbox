@@ -13,7 +13,6 @@ void InitializeTrackerHost(jvmtiEnv* jvmti, JNIEnv* env);
 struct StronglyConnectedComponent final
 {
     size_t Count;
-    intptr_t* Handles;
     jobject** ContextMemory; // Memory allocated in the .NET environment.
 };
 
@@ -27,5 +26,4 @@ void MarkCrossReferences(
     size_t sccsLen,
     StronglyConnectedComponent* sccs,
     size_t ccrsLen,
-    ComponentCrossReference* ccrs,
-    void (*markHandles)(size_t, intptr_t*));
+    ComponentCrossReference* ccrs);

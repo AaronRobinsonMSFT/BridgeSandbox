@@ -108,6 +108,7 @@ namespace
             assert(_nodeAddReference != nullptr);
             assert(target != nullptr && reference != nullptr);
 
+            std::printf("JVMAddReference(%p, %p)\n", target, reference);
             _jnienv->CallVoidMethod(target, _nodeAddReference, reference);
         }
 
@@ -151,8 +152,7 @@ namespace
             size_t sccsLen,
             StronglyConnectedComponent* sccs,
             size_t ccrsLen,
-            ComponentCrossReference* ccrs,
-            void (*markHandles)(size_t, intptr_t*))
+            ComponentCrossReference* ccrs)
         {
             std::printf("TrackerRuntimeManagerImpl::MarkCrossReferences()\n");
 
@@ -221,8 +221,6 @@ namespace
 
             if (markCount > 0)
             {
-                intptr_t* handlesToMark = (intptr_t*)std::malloc(markCount * sizeof(intptr_t));
-                intptr_t* handlesToMark_curr = handlesToMark;
                 sccs_curr = sccs; // Reset the iterator
                 for (; sccs_curr != sccs_end; ++sccs_curr)
                 {
@@ -231,13 +229,10 @@ namespace
                         jobject* curr = sccs_curr->ContextMemory[i];
                         if (*curr == nullptr)
                         {
-                            *handlesToMark_curr = sccs_curr->Handles[i];
-                            handlesToMark_curr++;
+                            // [TODO] Grab the previous JNI handle.
                         }
                     }
                 }
-                markHandles(markCount, handlesToMark);
-                std::free(handlesToMark);
             }
         }
     };
@@ -257,9 +252,8 @@ void MarkCrossReferences(
     size_t sccsLen,
     StronglyConnectedComponent* sccs,
     size_t ccrsLen,
-    ComponentCrossReference* ccrs,
-    void (*markHandles)(size_t, intptr_t*))
+    ComponentCrossReference* ccrs)
 {
     std::printf("MarkCrossReferences()\n");
-    TrackerRuntimeManager.MarkCrossReferences(sccsLen, sccs, ccrsLen, ccrs, markHandles);
+    TrackerRuntimeManager.MarkCrossReferences(sccsLen, sccs, ccrsLen, ccrs);
 }
