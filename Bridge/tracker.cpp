@@ -176,7 +176,7 @@ namespace
                 (void)_jnienv->GetJavaVM(&jvm);
 
                 JNIEnv* env = nullptr;
-                jint res = jvm->AttachCurrentThread((void**)&env, nullptr);
+                jint res = jvm->AttachCurrentThreadAsDaemon((void**)&env, nullptr);
                 if (res != JNI_OK)
                 {
                     std::printf("Failed to attach current thread to JVM\n");
