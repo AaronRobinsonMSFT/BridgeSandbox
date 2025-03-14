@@ -3,10 +3,13 @@
 #include <jvmti.h>
 
 #ifdef WINDOWS
+#define NOMINMAX
 #include <Windows.h>
 #endif // WINDOWS
 
-void InitializeTrackerHost(jvmtiEnv* jvmti, JNIEnv* env);
+using RemoveReferencesCallback = void (*)(int32_t count, int32_t* ids);
+
+void InitializeTrackerHost(jvmtiEnv* jvmti, JNIEnv* env, RemoveReferencesCallback callback);
 
 // Types and function callback defined by the .NET environment.
 // See System.Runtime.InteropServices.Java namespace for details.

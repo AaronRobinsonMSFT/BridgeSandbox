@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <limits>
 #include <cassert>
 
 #include "bridge.hpp"
@@ -12,6 +13,10 @@ namespace
     {
         jvmtiEnv* _jvmti;
         JNIEnv* _jnienv;
+
+        RemoveReferencesCallback _removeRefsCallback;
+
+        bool _attachedToThread;
 
         jclass _systemClass;
         jmethodID _gcMethod;
@@ -25,6 +30,8 @@ namespace
         TrackerRuntimeManagerImpl()
             : _jvmti{ nullptr }
             , _jnienv{ nullptr }
+            , _removeRefsCallback{ nullptr }
+            , _attachedToThread{ false }
             , _systemClass{ nullptr }
             , _gcMethod{ nullptr }
             , _rootNode{ nullptr }
@@ -49,9 +56,12 @@ namespace
             _jnienv->DeleteLocalRef(systemClass);
         }
 
-        void JVMInitializeObjectGraph()
+        void JVMInitializeObjectGraph(RemoveReferencesCallback callback)
         {
             assert(_jnienv != nullptr);
+
+            _removeRefsCallback = callback;
+            assert(_removeRefsCallback != nullptr);
 
             jclass javaAppClass = _jnienv->FindClass("JavaApp");
             assert(javaAppClass != nullptr);
@@ -106,9 +116,10 @@ namespace
         {
             assert(_jnienv != nullptr);
             assert(_nodeAddReference != nullptr);
-            assert(target != nullptr && reference != nullptr);
+            if (target == nullptr || reference == nullptr)
+                return;
 
-            std::printf("JVMAddReference(%p, %p)\n", target, reference);
+            //std::printf("JVMAddReference(%p, %p)\n", target, reference);
             _jnienv->CallVoidMethod(target, _nodeAddReference, reference);
         }
 
@@ -116,7 +127,8 @@ namespace
         {
             assert(_jnienv != nullptr);
             assert(_nodeClearReferences != nullptr);
-            assert(target != nullptr);
+            if (target == nullptr)
+                return;
 
             _jnienv->CallVoidMethod(target, _nodeClearReferences);
         }
@@ -125,6 +137,8 @@ namespace
         {
             assert(_jnienv != nullptr);
             assert(objPtr != nullptr);
+            if (*objPtr == nullptr)
+                return;
 
             jobject* tgt = objPtr;
             jobject ref = *tgt;
@@ -154,7 +168,24 @@ namespace
             size_t ccrsLen,
             ComponentCrossReference* ccrs)
         {
-            std::printf("TrackerRuntimeManagerImpl::MarkCrossReferences()\n");
+            //std::printf("TrackerRuntimeManagerImpl::MarkCrossReferences()\n");
+
+            if (!_attachedToThread)
+            {
+                JavaVM *jvm;
+                (void)_jnienv->GetJavaVM(&jvm);
+
+                JNIEnv* env = nullptr;
+                jint res = jvm->AttachCurrentThread((void**)&env, nullptr);
+                if (res != JNI_OK)
+                {
+                    std::printf("Failed to attach current thread to JVM\n");
+                    exit(-1);
+                }
+
+                // Attach the current thread to the JVM if not already attached
+                _attachedToThread = true;
+            }
 
             // Reify the object graph in the JVM
             StronglyConnectedComponent* sccs_curr = sccs;
@@ -170,7 +201,7 @@ namespace
                 for (size_t i = 1; i < sccs_curr->Count; ++i)
                 {
                     jobject* curr = sccs_curr->ContextMemory[i];
-                    JVMAddReference(*last, *curr);
+                    JVMAddReference(*last, curr[0]);
                     last = curr;
                 }
                 JVMAddReference(*last, *first);
@@ -185,7 +216,7 @@ namespace
 
                 jobject* src = sccs[ccrs_curr->SourceGroupIndex].ContextMemory[0];
                 jobject* dst = sccs[ccrs_curr->DestinationGroupIndex].ContextMemory[0];
-                JVMAddReference(*src, *dst);
+                JVMAddReference(src[0], dst[0]);
             }
 
             // Convert all JVM references to weak references
@@ -199,11 +230,11 @@ namespace
                 }
             }
 
-            JVMPrintNode();
+            //JVMPrintNode();
 
             JVMTriggerGC();
 
-            size_t markCount = 0;
+            int32_t removeCount = 0;
             // Convert all references back to strong references and clear references in Java.
             sccs_curr = sccs; // Reset the iterator
             for (; sccs_curr != sccs_end; ++sccs_curr)
@@ -211,28 +242,37 @@ namespace
                 for (size_t i = 0; i < sccs_curr->Count; ++i)
                 {
                     jobject* curr = sccs_curr->ContextMemory[i];
-                    if (JVMConvertToStrongReference(curr))
+                    if (!JVMConvertToStrongReference(curr))
                     {
-                        JVMClearReferences((jobject)*curr);
-                        markCount++;
+                        removeCount++;
+                        continue;
                     }
+
+                    JVMClearReferences(curr[0]);
                 }
             }
 
-            if (markCount > 0)
+            if (removeCount > 0)
             {
+                int32_t* removeList = (int32_t*)std::malloc(sizeof(int32_t) * removeCount);
+                int32_t* remove_curr = removeList;
+
                 sccs_curr = sccs; // Reset the iterator
                 for (; sccs_curr != sccs_end; ++sccs_curr)
                 {
                     for (size_t i = 0; i < sccs_curr->Count; ++i)
                     {
                         jobject* curr = sccs_curr->ContextMemory[i];
-                        if (*curr == nullptr)
+                        if (curr[0] == nullptr)
                         {
-                            // [TODO] Grab the previous JNI handle.
+                            jobject id = curr[1]; // Get the unique ID of the object
+                            *remove_curr = static_cast<int32_t>(reinterpret_cast<intptr_t>(id));
+                            ++remove_curr;
                         }
                     }
                 }
+                _removeRefsCallback(removeCount, removeList);
+                std::free(removeList);
             }
         }
     };
@@ -240,12 +280,12 @@ namespace
     TrackerRuntimeManagerImpl TrackerRuntimeManager;
 }
 
-void InitializeTrackerHost(jvmtiEnv* jvmti, JNIEnv* env)
+void InitializeTrackerHost(jvmtiEnv* jvmti, JNIEnv* env, RemoveReferencesCallback callback)
 {
     TrackerRuntimeManager.SetJVMState(jvmti, env);
 
     // Initialize objects needed for managing the JVM object graph.
-    TrackerRuntimeManager.JVMInitializeObjectGraph();
+    TrackerRuntimeManager.JVMInitializeObjectGraph(callback);
 }
 
 void MarkCrossReferences(
@@ -254,6 +294,5 @@ void MarkCrossReferences(
     size_t ccrsLen,
     ComponentCrossReference* ccrs)
 {
-    std::printf("MarkCrossReferences()\n");
     TrackerRuntimeManager.MarkCrossReferences(sccsLen, sccs, ccrsLen, ccrs);
 }

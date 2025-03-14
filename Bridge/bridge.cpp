@@ -17,15 +17,19 @@ namespace
         jvmtiEnv* Jvmti;
         JNIEnv* JNIenv;
         void (JNICALL *Callback)(void*);
-        void (JNICALL *InitializeBridge)();
-        HRESULT (JNICALL *CreateObject)(char const*, int32_t, void**);
+        void (JNICALL *InitializeBridge)(RemoveReferencesCallback);
+        HRESULT (JNICALL *CreateObject)(char const*, int32_t, void**, int32_t*);
         decltype(&::MarkCrossReferences) MarkCrossReferences;
     } BridgeContext;
 
+    // Used to acquire determine object identity.
+    jclass g_SystemClass;
+    jmethodID g_IdentityHashCodeMethod;
+
     // Forward declaration
     void JNICALL DotnetCallback(void* cxt);
-    void JNICALL InitializeBridge();
-    HRESULT JNICALL CreateObject(char const* className, int32_t id, void** instance);
+    void JNICALL InitializeBridge(RemoveReferencesCallback callback);
+    HRESULT JNICALL CreateObject(char const* className, int32_t id, void** instance, int32_t* instanceId);
 
     void JNICALL VMInit(
         jvmtiEnv* jvmti,
@@ -64,6 +68,23 @@ namespace
         // This will be passed to a native export to the .NET environment.
         env->SetStaticLongField(classID, fieldID, (jlong)&BridgeContext);
         env->DeleteLocalRef(classID);
+
+        // Get the handles so we can call System.identityHashCode() method.
+        jclass systemClass = env->FindClass("java/lang/System");
+        if (systemClass == nullptr)
+        {
+            std::printf("Failed to find System class\n");
+            exit(1);
+        }
+
+        g_SystemClass = (jclass)env->NewGlobalRef(systemClass);
+
+        g_IdentityHashCodeMethod = env->GetStaticMethodID(g_SystemClass, "identityHashCode", "(Ljava/lang/Object;)I");
+        if (g_IdentityHashCodeMethod == nullptr)
+        {
+            std::printf("Failed to find identityHashCode method\n");
+            exit(1);
+        }
     }
 
     void JNICALL GCStartCallback(jvmtiEnv*)
@@ -86,15 +107,15 @@ namespace
         std::printf("Bridge!DotnetCallback()\n");
     }
 
-    void JNICALL InitializeBridge()
+    void JNICALL InitializeBridge(RemoveReferencesCallback callback)
     {
         std::printf("Bridge!InitializeBridge()\n");
 
         // Initialize the tracker host with the JVM details.
-        InitializeTrackerHost(BridgeContext.Jvmti, BridgeContext.JNIenv);
+        InitializeTrackerHost(BridgeContext.Jvmti, BridgeContext.JNIenv, callback);
     }
 
-    HRESULT JNICALL CreateObject(char const* className, int32_t id, void** instance)
+    HRESULT JNICALL CreateObject(char const* className, int32_t id, void** instance, int32_t* instanceId)
     {
         jclass klass = BridgeContext.JNIenv->FindClass(className);
         jmethodID constructor = BridgeContext.JNIenv->GetMethodID(klass, "<init>", "(I)V");
@@ -106,6 +127,7 @@ namespace
         (void)error;
 
         *instance = (void*)BridgeContext.JNIenv->NewGlobalRef(obj);
+        *instanceId = BridgeContext.JNIenv->CallStaticIntMethod(g_SystemClass, g_IdentityHashCodeMethod, obj);
 
         BridgeContext.JNIenv->DeleteLocalRef(obj);
         BridgeContext.JNIenv->DeleteLocalRef(klass);

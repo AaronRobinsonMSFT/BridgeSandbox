@@ -6,6 +6,4 @@ namespace DnLib;
 public abstract class BaseNode
 {
     protected List<object> _references = new List<object>();
-
-    protected virtual IntPtr Handle { get; }
 }

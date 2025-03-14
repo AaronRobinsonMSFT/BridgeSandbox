@@ -33,9 +33,13 @@ public class DotnetNode : BaseNode, INode
 public unsafe class JavaNode : BaseNode, INode
 {
     private static int s_Counter = 0;
-    private GCHandle _handle;
     private IntPtr* _jniHandlePtr;
     private readonly int _id;
+
+    public static void ReleaseContext(IntPtr context)
+    {
+        NativeMemory.Free((void*)context);
+    }
 
     public JavaNode()
     {
@@ -43,33 +47,23 @@ public unsafe class JavaNode : BaseNode, INode
 
         int hr;
         IntPtr instance;
+        int instanceId;
         ReadOnlySpan<byte> className = "Node"u8;
         fixed (byte* ptr = &ReadOnlySpanMarshaller<byte, byte>.ManagedToUnmanagedIn.GetPinnableReference(className))
         {
-            hr = Init.s_BridgeContext->CreateObject(ptr, _id, (void**)&instance);
+            hr = Init.s_BridgeContext->CreateObject(ptr, _id, (void**)&instance, &instanceId);
             Marshal.ThrowExceptionForHR(hr, (IntPtr)(-1));
         }
 
-
-        _jniHandlePtr = (IntPtr*)NativeMemory.Alloc((nuint)sizeof(void*));
+        _jniHandlePtr = (IntPtr*)NativeMemory.Alloc(((nuint)sizeof(void*) * 2));
         _jniHandlePtr[0] = instance;
-
-        Console.WriteLine($"JavaNode created {(long)_jniHandlePtr:X}");
+        _jniHandlePtr[1] = instanceId;
 
 #pragma warning disable CA1416 // Validate platform compatibility
-        _handle = JavaMarshal.CreateReferenceTrackingHandle(this, (IntPtr)_jniHandlePtr);
+        GCHandle handle = JavaMarshal.CreateReferenceTrackingHandle(this, (IntPtr)_jniHandlePtr);
 #pragma warning restore CA1416 // Validate platform compatibility
-    }
 
-    ~JavaNode()
-    {
-        NativeMemory.Free(_jniHandlePtr);
-        _handle.Free();
-    }
-
-    protected override IntPtr Handle
-    {
-        get => GCHandle.ToIntPtr(_handle);
+        HandleMap.Instance.Add(instanceId, handle);
     }
 
     public void AddReference(object obj)
@@ -85,7 +79,7 @@ public unsafe class JavaNode : BaseNode, INode
     public void Print(string prefix)
     {
         nint h = _jniHandlePtr[0];
-        nint id = Handle;
+        nint id = _jniHandlePtr[1];
         Console.WriteLine($"{prefix} {nameof(JavaNode)} {_id} {(h == IntPtr.Zero ? "Collected " : string.Empty)}({h:X}) Identity: {id:X}");
 
         foreach (object reference in _references)

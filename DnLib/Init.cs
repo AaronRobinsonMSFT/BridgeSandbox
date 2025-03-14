@@ -13,8 +13,8 @@ internal unsafe struct BridgeContext
     public void* Jvmti;
     public void* JNIEnv;
     public delegate* unmanaged[Cdecl]<void*, void> Callback; // Cdecl is needed for x86 scenarios. Ignored on other platforms.
-    public delegate* unmanaged[Cdecl]<void> InitializeBridge;
-    public delegate* unmanaged[Cdecl]<byte*, int, void**, int> CreateObject;
+    public delegate* unmanaged[Cdecl]<void*, void> InitializeBridge;
+    public delegate* unmanaged[Cdecl]<byte*, int, void**, int*, int> CreateObject;
     public delegate* unmanaged<
                 nint,                               // Length of SCC collection
                 StronglyConnectedComponent*,        // SCC collection
@@ -38,7 +38,7 @@ public unsafe sealed class Init
         s_BridgeContext = (BridgeContext*)bridgeContextRaw;
 
         Debug.Assert(s_BridgeContext->InitializeBridge is not null);
-        s_BridgeContext->InitializeBridge();
+        s_BridgeContext->InitializeBridge((delegate* unmanaged<int, int*, void>)&HandleMap.RemoveUnreachableObjects);
 
         Debug.Assert(s_BridgeContext->MarkCrossReferences is not null);
 #pragma warning disable CA1416 // Validate platform compatibility
@@ -87,7 +87,7 @@ public unsafe sealed class Init
 
         Console.WriteLine($"Mark collectible nodes");
         {
-            //using Marshaller marshaller = new(root.BuildJavaReferenceGraph(c1));
+            c1.ClearReferences();
             GC.Collect();
         }
 
