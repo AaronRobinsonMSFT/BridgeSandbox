@@ -54,11 +54,19 @@ internal class HandleMap
     }
 
     [UnmanagedCallersOnly]
-    internal static unsafe void RemoveUnreachableObjects(int count, int* unreachableIds)
+    internal static unsafe void RemoveUnreachableObjects(int count, int* unreachableIds, nint sccsLen, StronglyConnectedComponent* sccs, nint ccrsLen, ComponentCrossReference* ccrs)
     {
         Console.WriteLine($"Removing {count} unreachable objects.");
 
         Span<int> ids = new Span<int>(unreachableIds, count);
         Instance.Remove(ids);
+
+        Console.WriteLine($"Freeing CrossReference resources.");
+
+#pragma warning disable CA1416 // Validate platform compatibility
+        JavaMarshal.ReleaseMarkCrossReferenceResources(
+            new Span<StronglyConnectedComponent>(sccs, (int)sccsLen),
+            new Span<ComponentCrossReference>(ccrs, (int)ccrsLen));
+#pragma warning restore CA1416 // Validate platform compatibility
     }
 }

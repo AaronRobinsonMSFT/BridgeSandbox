@@ -38,7 +38,7 @@ public unsafe sealed class Init
         s_BridgeContext = (BridgeContext*)bridgeContextRaw;
 
         Debug.Assert(s_BridgeContext->InitializeBridge is not null);
-        s_BridgeContext->InitializeBridge((delegate* unmanaged<int, int*, void>)&HandleMap.RemoveUnreachableObjects);
+        s_BridgeContext->InitializeBridge((delegate* unmanaged<int, int*, nint, StronglyConnectedComponent*, nint, ComponentCrossReference*, void>)&HandleMap.RemoveUnreachableObjects);
 
         Debug.Assert(s_BridgeContext->MarkCrossReferences is not null);
 #pragma warning disable CA1416 // Validate platform compatibility

@@ -7,7 +7,7 @@
 #include <Windows.h>
 #endif // WINDOWS
 
-using RemoveReferencesCallback = void (*)(int32_t count, int32_t* ids);
+using RemoveReferencesCallback = void (*)(int32_t count, int32_t* ids, size_t sccsLen, void* sccs, size_t ccrsLen, void* ccrs);
 
 void InitializeTrackerHost(jvmtiEnv* jvmti, JNIEnv* env, RemoveReferencesCallback callback);
 

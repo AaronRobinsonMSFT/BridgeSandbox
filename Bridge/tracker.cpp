@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <cstdint>
 #include <limits>
+#include <thread>
+#include <mutex>
 #include <cassert>
 
 #include "bridge.hpp"
@@ -26,6 +28,19 @@ namespace
         jmethodID _nodeAddReference;
         jmethodID _nodeClearReferences;
 
+        // Threading related members
+        std::thread _workerThread;
+        std::mutex _mutex;
+        std::condition_variable _cv;
+        bool _taskReady;
+        bool _shouldStop;
+
+        // Task data
+        size_t _sccsLen;
+        StronglyConnectedComponent* _sccs;
+        size_t _ccrsLen;
+        ComponentCrossReference* _ccrs;
+
     public:
         TrackerRuntimeManagerImpl()
             : _jvmti{ nullptr }
@@ -37,9 +52,28 @@ namespace
             , _rootNode{ nullptr }
             , _nodePrint{ nullptr }
             , _nodeAddReference{ nullptr }
-        { }
+            , _nodeClearReferences{ nullptr }
+            , _taskReady{ false }
+            , _shouldStop{ false }
+            , _sccsLen{ 0 }
+            , _sccs{ nullptr }
+            , _ccrsLen{ 0 }
+            , _ccrs{ nullptr }
+        {
+        }
 
-        ~TrackerRuntimeManagerImpl() = default;
+        ~TrackerRuntimeManagerImpl()
+        {
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                _shouldStop = true;
+                _taskReady = true;
+            }
+            _cv.notify_one();
+
+            if (_workerThread.joinable())
+                _workerThread.join();
+        }
 
         void SetJVMState(jvmtiEnv* jvmti, JNIEnv* env)
         {
@@ -93,9 +127,134 @@ namespace
             _jnienv->DeleteLocalRef(nodeClass);
             _jnienv->DeleteLocalRef(nodeInst);
             _jnienv->DeleteLocalRef(javaAppClass);
+
+            // Start GC Bridge worker thread
+            _workerThread = std::thread(&TrackerRuntimeManagerImpl::WorkerThreadFunc, this);
         }
 
     private:
+        void WorkerThreadFunc()
+        {
+            JavaVM *jvm;
+            (void)_jnienv->GetJavaVM(&jvm);
+
+            JNIEnv* env = nullptr;
+            jint res = jvm->AttachCurrentThreadAsDaemon((void**)&env, nullptr);
+            if (res != JNI_OK)
+            {
+                std::printf("Failed to attach current thread to JVM\n");
+                exit(-1);
+            }
+
+            while (true)
+            {
+                std::unique_lock<std::mutex> lock(_mutex);
+                _cv.wait(lock, [this] { return _taskReady; });
+
+                if (_shouldStop)
+                    break;
+
+                // Process the task
+                ProcessMarkCrossReferencesTask();
+
+                // Reset the task flag
+                _taskReady = false;
+            }
+        }
+
+        void ProcessMarkCrossReferencesTask()
+        {
+            // Reify the object graph in the JVM
+            StronglyConnectedComponent* sccs_curr = _sccs;
+            StronglyConnectedComponent* sccs_end = _sccs + _sccsLen;
+            for (; sccs_curr != sccs_end; ++sccs_curr)
+            {
+                if (sccs_curr->Count == 0)
+                    continue;
+                assert(sccs_curr->Count >= 2);
+
+                jobject* first = sccs_curr->ContextMemory[0];
+                jobject* last = first;
+                for (size_t i = 1; i < sccs_curr->Count; ++i)
+                {
+                    jobject* curr = sccs_curr->ContextMemory[i];
+                    JVMAddReference(*last, curr[0]);
+                    last = curr;
+                }
+                JVMAddReference(*last, *first);
+            }
+
+            ComponentCrossReference* ccrs_curr = _ccrs;
+            ComponentCrossReference* ccrs_end = _ccrs + _ccrsLen;
+            for (; ccrs_curr != ccrs_end; ++ccrs_curr)
+            {
+                if (ccrs_curr->SourceGroupIndex == ccrs_curr->DestinationGroupIndex)
+                    continue;
+
+                jobject* src = _sccs[ccrs_curr->SourceGroupIndex].ContextMemory[0];
+                jobject* dst = _sccs[ccrs_curr->DestinationGroupIndex].ContextMemory[0];
+                JVMAddReference(src[0], dst[0]);
+            }
+
+            // Convert all JVM references to weak references
+            sccs_curr = _sccs; // Reset the iterator
+            for (; sccs_curr != sccs_end; ++sccs_curr)
+            {
+                for (size_t i = 0; i < sccs_curr->Count; ++i)
+                {
+                    jobject* curr = sccs_curr->ContextMemory[i];
+                    JVMConvertToWeakReference(curr);
+                }
+            }
+
+            //JVMPrintNode();
+
+            JVMTriggerGC();
+
+            int32_t removeCount = 0;
+            // Convert all references back to strong references and clear references in Java.
+            sccs_curr = _sccs; // Reset the iterator
+            for (; sccs_curr != sccs_end; ++sccs_curr)
+            {
+                for (size_t i = 0; i < sccs_curr->Count; ++i)
+                {
+                    jobject* curr = sccs_curr->ContextMemory[i];
+                    if (!JVMConvertToStrongReference(curr))
+                    {
+                        removeCount++;
+                        continue;
+                    }
+
+                    JVMClearReferences(curr[0]);
+                }
+            }
+
+            int32_t* removeList = nullptr;
+            if (removeCount > 0)
+            {
+                removeList = (int32_t*)std::malloc(sizeof(int32_t) * removeCount);
+                int32_t* remove_curr = removeList;
+
+                sccs_curr = _sccs; // Reset the iterator
+                for (; sccs_curr != sccs_end; ++sccs_curr)
+                {
+                    for (size_t i = 0; i < sccs_curr->Count; ++i)
+                    {
+                        jobject* curr = sccs_curr->ContextMemory[i];
+                        if (curr[0] == nullptr)
+                        {
+                            jobject id = curr[1]; // Get the unique ID of the object
+                            *remove_curr = static_cast<int32_t>(reinterpret_cast<intptr_t>(id));
+                            ++remove_curr;
+                        }
+                    }
+                }
+            }
+
+            _removeRefsCallback(removeCount, removeList, _sccsLen, _sccs, _ccrsLen, _ccrs);
+            std::free(removeList);
+        }
+
         void JVMTriggerGC()
         {
             assert(_jnienv != nullptr);
@@ -170,110 +329,25 @@ namespace
         {
             //std::printf("TrackerRuntimeManagerImpl::MarkCrossReferences()\n");
 
-            if (!_attachedToThread)
-            {
-                JavaVM *jvm;
-                (void)_jnienv->GetJavaVM(&jvm);
+            // Mutex is already held, so return immediately
+            if (!_mutex.try_lock())
+                return;
 
-                JNIEnv* env = nullptr;
-                jint res = jvm->AttachCurrentThreadAsDaemon((void**)&env, nullptr);
-                if (res != JNI_OK)
-                {
-                    std::printf("Failed to attach current thread to JVM\n");
-                    exit(-1);
-                }
+            //
+            // [NOTE] If the GCHandles need to be "locked", the bridge should do this here.
+            // The current prototype doesn't implement this feature.
+            //
 
-                // Attach the current thread to the JVM if not already attached
-                _attachedToThread = true;
-            }
+            assert(!_taskReady);
+            _sccsLen = sccsLen;
+            _sccs = sccs;
+            _ccrsLen = ccrsLen;
+            _ccrs = ccrs;
+            _taskReady = true;
+            _mutex.unlock();  // Release the lock before triggering the condition variable
 
-            // Reify the object graph in the JVM
-            StronglyConnectedComponent* sccs_curr = sccs;
-            StronglyConnectedComponent* sccs_end = sccs + sccsLen;
-            for (; sccs_curr != sccs_end; ++sccs_curr)
-            {
-                if (sccs_curr->Count == 0)
-                    continue;
-                assert(sccs_curr->Count >= 2);
-
-                jobject* first = sccs_curr->ContextMemory[0];
-                jobject* last = first;
-                for (size_t i = 1; i < sccs_curr->Count; ++i)
-                {
-                    jobject* curr = sccs_curr->ContextMemory[i];
-                    JVMAddReference(*last, curr[0]);
-                    last = curr;
-                }
-                JVMAddReference(*last, *first);
-            }
-
-            ComponentCrossReference* ccrs_curr = ccrs;
-            ComponentCrossReference* ccrs_end = ccrs + ccrsLen;
-            for (; ccrs_curr != ccrs_end; ++ccrs_curr)
-            {
-                if (ccrs_curr->SourceGroupIndex == ccrs_curr->DestinationGroupIndex)
-                    continue;
-
-                jobject* src = sccs[ccrs_curr->SourceGroupIndex].ContextMemory[0];
-                jobject* dst = sccs[ccrs_curr->DestinationGroupIndex].ContextMemory[0];
-                JVMAddReference(src[0], dst[0]);
-            }
-
-            // Convert all JVM references to weak references
-            sccs_curr = sccs; // Reset the iterator
-            for (; sccs_curr != sccs_end; ++sccs_curr)
-            {
-                for (size_t i = 0; i < sccs_curr->Count; ++i)
-                {
-                    jobject* curr = sccs_curr->ContextMemory[i];
-                    JVMConvertToWeakReference(curr);
-                }
-            }
-
-            //JVMPrintNode();
-
-            JVMTriggerGC();
-
-            int32_t removeCount = 0;
-            // Convert all references back to strong references and clear references in Java.
-            sccs_curr = sccs; // Reset the iterator
-            for (; sccs_curr != sccs_end; ++sccs_curr)
-            {
-                for (size_t i = 0; i < sccs_curr->Count; ++i)
-                {
-                    jobject* curr = sccs_curr->ContextMemory[i];
-                    if (!JVMConvertToStrongReference(curr))
-                    {
-                        removeCount++;
-                        continue;
-                    }
-
-                    JVMClearReferences(curr[0]);
-                }
-            }
-
-            if (removeCount > 0)
-            {
-                int32_t* removeList = (int32_t*)std::malloc(sizeof(int32_t) * removeCount);
-                int32_t* remove_curr = removeList;
-
-                sccs_curr = sccs; // Reset the iterator
-                for (; sccs_curr != sccs_end; ++sccs_curr)
-                {
-                    for (size_t i = 0; i < sccs_curr->Count; ++i)
-                    {
-                        jobject* curr = sccs_curr->ContextMemory[i];
-                        if (curr[0] == nullptr)
-                        {
-                            jobject id = curr[1]; // Get the unique ID of the object
-                            *remove_curr = static_cast<int32_t>(reinterpret_cast<intptr_t>(id));
-                            ++remove_curr;
-                        }
-                    }
-                }
-                _removeRefsCallback(removeCount, removeList);
-                std::free(removeList);
-            }
+            // Notify the worker thread
+            _cv.notify_one();
         }
     };
 
